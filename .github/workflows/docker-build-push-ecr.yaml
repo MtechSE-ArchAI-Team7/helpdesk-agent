@@ -47,8 +47,11 @@ on:
         type: boolean
         default: true
     secrets:
-      AWS_ROLE_ARN:
-        description: IAM role assumed through GitHub OIDC.
+      AWS_ACCESS_KEY_ID:
+        description: AWS access key ID used to authenticate.
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        description: AWS secret access key used to authenticate.
         required: true
     outputs:
       image-uri:
@@ -60,7 +63,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   image:
@@ -78,7 +80,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Login to Amazon ECR
