@@ -1,0 +1,2 @@
+# The Lambda-bundled boto3 may predate the bedrock-agentcore client, so pin a recent one.
+boto3>=1.39.0

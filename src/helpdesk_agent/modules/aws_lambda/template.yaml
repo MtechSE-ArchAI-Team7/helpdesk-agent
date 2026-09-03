@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: API Gateway -> Lambda -> helpdesk agent email webhook on Bedrock AgentCore
+
+Parameters:
+  AgentRuntimeArn:
+    Type: String
+    Description: ARN of the helpdesk agent AgentCore runtime
+  AgentQualifier:
+    Type: String
+    Default: DEFAULT
+    Description: AgentCore runtime endpoint name (qualifier)
+  WebhookSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional shared secret required in the x-webhook-secret header
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 300
+    MemorySize: 512
+
+Resources:
+  EmailWebhookApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+
+  EmailWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: handler.lambda_handler
+      Environment:
+        Variables:
+          AGENT_RUNTIME_ARN: !Ref AgentRuntimeArn
+          AGENT_QUALIFIER: !Ref AgentQualifier
+          WEBHOOK_SECRET: !Ref WebhookSecret
+          LOG_LEVEL: INFO
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: bedrock-agentcore:InvokeAgentRuntime
+              Resource:
+                - !Ref AgentRuntimeArn
+                - !Sub "${AgentRuntimeArn}/runtime-endpoint/*"
+      Events:
+        EmailWebhook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref EmailWebhookApi
+            Path: /webhooks/email
+            Method: POST
+
+Outputs:
+  WebhookUrl:
+    Description: Endpoint to configure in your email provider
+    Value: !Sub "https://${EmailWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/prod/webhooks/email"
