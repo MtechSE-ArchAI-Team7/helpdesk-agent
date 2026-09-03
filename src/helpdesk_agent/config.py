@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -73,4 +74,42 @@ class TriageConfig:
         return cls(
             confidence_threshold=float(os.getenv("HELPDESK_AGENT_TRIAGE_CONFIDENCE_THRESHOLD", "0.6")),
             faq_relevance_threshold=float(os.getenv("HELPDESK_AGENT_FAQ_RELEVANCE_THRESHOLD", "0.7")),
+        )
+
+
+@dataclass
+class A2AConfig:
+    """Configuration for the A2A (Agent2Agent) protocol interface."""
+
+    base_url: str = "http://localhost:8080"
+    agent_name: str = "helpdesk-agent"
+    timeout_seconds: float = 30.0
+    # Remote A2A agents this agent may call, as a name -> base URL map.
+    remote_agents: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_env(cls) -> "A2AConfig":
+        remote_raw = os.getenv("HELPDESK_AGENT_A2A_REMOTE_AGENTS", "").strip()
+        remote_agents: dict[str, str] = {}
+        if remote_raw:
+            try:
+                parsed = json.loads(remote_raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "HELPDESK_AGENT_A2A_REMOTE_AGENTS must be a JSON object mapping agent names to base URLs, "
+                    f'e.g. {{"jira-bot": "http://localhost:9000"}}: {exc}'
+                ) from exc
+            if not isinstance(parsed, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+            ):
+                raise ValueError(
+                    "HELPDESK_AGENT_A2A_REMOTE_AGENTS must be a JSON object mapping agent names to base URLs"
+                )
+            remote_agents = dict(parsed)
+
+        return cls(
+            base_url=os.getenv("HELPDESK_AGENT_A2A_BASE_URL", "http://localhost:8080"),
+            agent_name=os.getenv("HELPDESK_AGENT_A2A_AGENT_NAME", "helpdesk-agent"),
+            timeout_seconds=float(os.getenv("HELPDESK_AGENT_A2A_TIMEOUT_SECONDS", "30.0")),
+            remote_agents=remote_agents,
         )

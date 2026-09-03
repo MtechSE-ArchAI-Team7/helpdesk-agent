@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from .config import LLMConfig, MCPConfig
+from .config import A2AConfig, LLMConfig, MCPConfig
 from .core.cases import CaseStore
 from .core.workflow import HelpdeskWorkflow
 from .mcp import MCPProxyAdapter
+from .modules.a2a.client import A2AClientManager
 from .modules.chat.service import ConversationStore
 from .modules.triage.llm import LLMTriageClient
 
@@ -53,3 +54,15 @@ def get_conversation_store() -> ConversationStore:
 def get_case_store() -> CaseStore:
     """Get case store singleton."""
     return CaseStore()
+
+
+@lru_cache
+def get_a2a_config() -> A2AConfig:
+    """Get A2A configuration from environment."""
+    return A2AConfig.from_env()
+
+
+@lru_cache
+def get_a2a_client_manager() -> A2AClientManager:
+    """Get the outbound A2A client manager singleton (plumbing only)."""
+    return A2AClientManager(get_a2a_config())

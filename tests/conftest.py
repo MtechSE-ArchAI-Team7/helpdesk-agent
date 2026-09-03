@@ -19,9 +19,13 @@ def _reset_dependency_caches():
 
     dependencies.get_mcp_config.cache_clear()
     dependencies.get_mcp_adapter.cache_clear()
+    dependencies.get_a2a_config.cache_clear()
+    dependencies.get_a2a_client_manager.cache_clear()
     yield
     dependencies.get_mcp_config.cache_clear()
     dependencies.get_mcp_adapter.cache_clear()
+    dependencies.get_a2a_config.cache_clear()
+    dependencies.get_a2a_client_manager.cache_clear()
 
 
 @pytest.fixture
