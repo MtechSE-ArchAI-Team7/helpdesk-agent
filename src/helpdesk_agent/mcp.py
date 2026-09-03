@@ -66,19 +66,20 @@ class MCPProxyAdapter:
         self, tool_name: str, arguments: dict[str, Any]
     ) -> tuple[str, dict[str, Any]]:
         """Map legacy dotted tool names + args onto mcp-atlassian's schema."""
+        prefix = self.config.atlassian_tool_prefix
         if tool_name == "jira.create_issue":
             description = arguments.get("description", "")
             reporter = arguments.get("reporter")
             if reporter:
                 description = f"{description}\n\nReporter: {reporter}"
-            return "jira_create_issue", {
+            return f"{prefix}jira_create_issue", {
                 "project_key": self.config.jira_project_key,
                 "summary": arguments.get("summary", "Helpdesk request"),
                 "issue_type": "Task",
                 "description": description,
             }
         # Generic fallback: convert dots to underscores, pass args through
-        return tool_name.replace(".", "_"), arguments
+        return f"{prefix}{tool_name.replace('.', '_')}", arguments
 
     async def call_tool(
         self,
