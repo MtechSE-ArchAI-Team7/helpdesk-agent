@@ -1,0 +1,129 @@
+name: Docker Build and Push to ECR
+
+on:
+  workflow_call:
+    inputs:
+      aws-region:
+        description: AWS region containing the ECR repository.
+        required: true
+        type: string
+      ecr-repository:
+        description: ECR repository name, for example archai/frontend.
+        required: true
+        type: string
+      dockerfile:
+        description: Path to the Dockerfile.
+        required: false
+        type: string
+        default: Dockerfile
+      context:
+        description: Docker build context.
+        required: false
+        type: string
+        default: .
+      source-ref:
+        description: Git ref or SHA to check out before building. Leave empty to use the triggering workflow ref.
+        required: false
+        type: string
+        default: ""
+      image-tag:
+        description: Primary image tag. Leave empty to use the commit SHA.
+        required: false
+        type: string
+        default: ""
+      extra-tags:
+        description: Optional newline-separated extra tags, for example main or latest.
+        required: false
+        type: string
+        default: ""
+      platforms:
+        description: Target platforms. Use linux/amd64 for the simplest EKS MVP.
+        required: false
+        type: string
+        default: linux/amd64
+      push:
+        description: Push the built image to ECR.
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      AWS_ROLE_ARN:
+        description: IAM role assumed through GitHub OIDC.
+        required: true
+    outputs:
+      image-uri:
+        description: Immutable image URI with the primary tag.
+        value: ${{ jobs.image.outputs.image-uri }}
+      image-digest:
+        description: Pushed image digest.
+        value: ${{ jobs.image.outputs.image-digest }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    outputs:
+      image-uri: ${{ steps.meta.outputs.image-uri }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source-ref }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Prepare image metadata
+        id: meta
+        shell: bash
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ inputs.ecr-repository }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          EXTRA_TAGS: ${{ inputs.extra-tags }}
+        run: |
+          if [ -z "$IMAGE_TAG" ]; then
+            IMAGE_TAG="${GITHUB_SHA}"
+          fi
+          image="$REGISTRY/$REPOSITORY"
+          {
+            echo "image-uri=$image:$IMAGE_TAG"
+            echo "tags<<EOF"
+            echo "$image:$IMAGE_TAG"
+            while IFS= read -r tag; do
+              if [ -n "$tag" ]; then
+                echo "$image:$tag"
+              fi
+            done <<< "$EXTRA_TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
