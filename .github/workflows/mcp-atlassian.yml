@@ -1,4 +1,4 @@
-name: Mirror mcp-atlassian from GHCR to ECR
+name: MCP Atlassian
 
 on:
   workflow_dispatch:
@@ -27,10 +27,13 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Pull image from GHCR
-        run: docker pull $SOURCE_IMAGE
+      - name: Pull ARM64 image from GHCR
+        run: |
+          docker pull \
+            --platform linux/arm64 \
+            $SOURCE_IMAGE
 
-      - name: Tag image for ECR
+      - name: Tag ARM64 image for ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
@@ -38,10 +41,9 @@ jobs:
             $SOURCE_IMAGE \
             $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      - name: Push image to ECR
+      - name: Push ARM64 image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           docker push \
             $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
