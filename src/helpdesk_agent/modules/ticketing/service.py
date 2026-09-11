@@ -17,6 +17,25 @@ def extract_ticket_id(subject: str, project_key: str = "HELP") -> str | None:
     return match.group(0) if match else None
 
 
+# Triage priorities -> Jira priority names (Jira standard set).
+_JIRA_PRIORITY_MAP = {
+    "critical": "Highest",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "lowest": "Lowest",
+}
+
+
+def to_jira_priority(priority: str) -> str:
+    """Map a triage priority value to a Jira priority name.
+
+    Unknown values are title-cased and passed through (custom Jira priority
+    schemes may define them).
+    """
+    return _JIRA_PRIORITY_MAP.get(priority.strip().lower(), priority.strip().title())
+
+
 class JiraTicketFlow:
     def __init__(self, mcp_adapter: MCPProxyAdapter | None = None) -> None:
         self.mcp_adapter = mcp_adapter
@@ -161,7 +180,7 @@ class JiraTicketFlow:
         if description is not None:
             fields["description"] = description
         if priority is not None:
-            fields["priority"] = priority
+            fields["priority"] = to_jira_priority(priority)
 
         response: MCPResponse = await self.mcp_adapter.call_tool(
             "jira.update_issue",

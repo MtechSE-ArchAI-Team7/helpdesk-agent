@@ -63,12 +63,12 @@ def _build_server() -> FastMCP:
             "content": {"tool": "zohomail.sendEmail", "arguments": arguments or {}, "message_id": f"msg-{uuid.uuid4().hex[:8]}"},
         }
 
-    @mcp.tool(name="zohomail.sendReplyMail")
-    def zohomail_send_reply_mail(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    @mcp.tool(name="zohomail.sendReplyEmail")
+    def zohomail_send_reply_email(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
-            "content": {"tool": "zohomail.sendReplyMail", "arguments": arguments or {}, "message_id": f"reply-{uuid.uuid4().hex[:8]}"},
+            "content": {"tool": "zohomail.sendReplyEmail", "arguments": arguments or {}, "message_id": f"reply-{uuid.uuid4().hex[:8]}"},
         }
 
     @mcp.tool(name="zohomail.listEmails")

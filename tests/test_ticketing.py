@@ -2,7 +2,17 @@ import pytest
 
 from helpdesk_agent.mcp import MCPProxyAdapter
 from helpdesk_agent.mock_mcp_server import MockMCPServer
-from helpdesk_agent.modules.ticketing.service import JiraTicketFlow
+from helpdesk_agent.modules.ticketing.service import JiraTicketFlow, to_jira_priority
+
+
+def test_to_jira_priority_mapping() -> None:
+    assert to_jira_priority("critical") == "Highest"
+    assert to_jira_priority("high") == "High"
+    assert to_jira_priority("medium") == "Medium"
+    assert to_jira_priority("low") == "Low"
+    assert to_jira_priority(" High ") == "High"
+    # Unknown values pass through title-cased (custom priority schemes)
+    assert to_jira_priority("urgent") == "Urgent"
 
 
 @pytest.fixture(scope="module")

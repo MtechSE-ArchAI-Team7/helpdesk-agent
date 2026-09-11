@@ -46,7 +46,7 @@ def test_resolve_url_routes_by_tool_prefix() -> None:
     assert adapter._resolve_url("jira.create_issue") == "http://jira:2/mcp"
     assert adapter._resolve_url("jira.add_comment") == "http://jira:2/mcp"
     assert adapter._resolve_url("confluence.search") == "http://jira:2/mcp"
-    assert adapter._resolve_url("zohomail.sendReplyMail") == "http://zoho:3/mcp"
+    assert adapter._resolve_url("zohomail.sendReplyEmail") == "http://zoho:3/mcp"
     assert adapter._resolve_url("faq.search") == "http://faq:4/mcp"
     assert adapter._resolve_url("actions/get") == "http://default:1/mcp"
 
@@ -54,7 +54,7 @@ def test_resolve_url_routes_by_tool_prefix() -> None:
 def test_resolve_url_falls_back_to_base_url() -> None:
     """Without dedicated URLs, all tools use base_url."""
     adapter = MCPProxyAdapter(MCPConfig(base_url="http://default:1/mcp"))
-    assert adapter._resolve_url("zohomail.sendReplyMail") == "http://default:1/mcp"
+    assert adapter._resolve_url("zohomail.sendReplyEmail") == "http://default:1/mcp"
     assert adapter._resolve_url("faq.search") == "http://default:1/mcp"
     # jira.* only routes away when atlassian_url is configured
     assert adapter._resolve_url("jira.create_issue") == "http://default:1/mcp"
@@ -83,4 +83,5 @@ def test_translate_update_issue_serializes_fields_as_json_string() -> None:
     assert args["issue_key"] == "HELP-1"
     assert isinstance(args["fields"], str)
     parsed = json.loads(args["fields"])
-    assert parsed == {"summary": "New", "priority": {"name": "high"}}
+    # priority is passed as a plain name string, not {"name": ...}
+    assert parsed == {"summary": "New", "priority": "high"}

@@ -113,12 +113,10 @@ class MCPProxyAdapter:
                 "body": arguments.get("comment", ""),
             }
         if tool_name == "jira.update_issue":
-            # mcp-atlassian's jira_update_issue takes `fields` as a JSON string.
+            # mcp-atlassian's jira_update_issue takes `fields` as a JSON string,
+            # and priority as a plain name string (e.g. "High").
             issue_key = arguments.get("issue_key", "")
             fields = dict(arguments.get("fields") or {})
-            priority = fields.pop("priority", None)
-            if priority is not None:
-                fields["priority"] = {"name": priority}
             return f"{prefix}jira_update_issue", {
                 "issue_key": issue_key,
                 "fields": json.dumps(fields),

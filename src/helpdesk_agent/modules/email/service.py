@@ -8,7 +8,7 @@ from ...mcp import MCPProxyAdapter, MCPResponse
 class ZohoMailFlow:
     """Handle email send/reply/read operations via the Zoho Mail MCP server.
 
-    Tool names follow the Zoho Mail MCP server (sendEmail, sendReplyMail,
+    Tool names follow the Zoho Mail MCP server (sendEmail, sendReplyEmail,
     listEmails, getMailAccounts). Argument names follow the Zoho Mail API
     conventions (accountId, toAddress, subject, content, messageId).
     """
@@ -102,7 +102,7 @@ class ZohoMailFlow:
             arguments["accountId"] = account_id
 
         response: MCPResponse = await self.mcp_adapter.call_tool(
-            "zohomail.sendReplyMail",
+            "zohomail.sendReplyEmail",
             arguments,
             wait_for_completion=True,
             idempotency_key=f"reply-{message_id}-{subject or 'default'}",
