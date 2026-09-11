@@ -190,12 +190,15 @@ class MCPProxyAdapter:
         structured = getattr(result, "structuredContent", None) or {}
         data = {**content, **structured} if isinstance(structured, dict) else content
 
-        # Normalize status: the legacy proxy returns a string ("completed"),
-        # while Zoho-style envelopes use {"status": {"code": 200, ...}}.
+        # Normalize status across server conventions: the legacy proxy returns
+        # "completed", Zoho-style envelopes use {"status": {"code": 200, ...}}
+        # and/or structuredContent with "status": "success".
         raw_status = data.get("status", "completed")
         if isinstance(raw_status, dict):
             code = raw_status.get("code")
             status = "completed" if code in (200, 201, 202) else "failed"
+        elif isinstance(raw_status, str) and raw_status.lower() in ("success", "ok", "succeeded", "completed"):
+            status = "completed"
         else:
             status = raw_status
         if not wait_for_completion or tool_name.endswith("approval_request"):
