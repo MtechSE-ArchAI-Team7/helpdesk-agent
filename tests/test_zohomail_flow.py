@@ -32,12 +32,29 @@ async def test_reply_email_with_subject_override(mock_server) -> None:
     adapter = MCPProxyAdapter()
     flow = ZohoMailFlow(adapter)
     result = await flow.reply_email(
-        message_id="msg-123",
+        message_id="123456789",
         body="Reply text",
         subject="[HELP-1] Test Subject",
+        to="user@example.com",
     )
     assert result["status"] == "sent"
     assert result["reply_message_id"]
+
+
+@pytest.mark.asyncio
+async def test_reply_email_rfc822_id_falls_back_to_send(mock_server) -> None:
+    """RFC822 Message-ID headers can't thread; falls back to a fresh sendEmail."""
+    adapter = MCPProxyAdapter()
+    flow = ZohoMailFlow(adapter)
+    result = await flow.reply_email(
+        message_id="<abc@mail.gmail.com>",
+        body="Reply text",
+        subject="[HELP-1] Test Subject",
+        to="user@example.com",
+    )
+    assert result["status"] == "sent"
+    assert result["message_id"]
+    assert "not a Zoho internal ID" in result["note"]
 
 
 @pytest.mark.asyncio
@@ -73,7 +90,7 @@ async def test_get_messages_mock_mode() -> None:
 async def test_reply_email_mock_mode() -> None:
     flow = ZohoMailFlow()
     result = await flow.reply_email(
-        message_id="msg-123",
+        message_id="123456789",
         body="Reply text",
         subject="[HELP-1] Test",
     )

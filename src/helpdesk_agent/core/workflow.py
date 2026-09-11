@@ -239,7 +239,9 @@ class HelpdeskWorkflow:
 
         message_id = initial_input.get("metadata", {}).get("message_id")
         if message_id:
-            email_result = await self.mail_flow.reply_email(message_id, ack_body, subject=ack_subject)
+            email_result = await self.mail_flow.reply_email(
+                message_id, ack_body, subject=ack_subject, to=initial_input.get("sender")
+            )
             workflow_state.record_history(
                 "acknowledge",
                 email_result.get("status", "failed"),
@@ -426,7 +428,9 @@ class HelpdeskWorkflow:
         # Reply to the user with the clarifying questions
         message_id = initial_input.get("metadata", {}).get("message_id")
         if message_id:
-            email_result = await self.mail_flow.reply_email(message_id, clarification_body, subject=reply_subject)
+            email_result = await self.mail_flow.reply_email(
+                message_id, clarification_body, subject=reply_subject, to=initial_input.get("sender")
+            )
             workflow_state.record_history(
                 "clarify",
                 email_result.get("status", "failed"),
@@ -569,7 +573,9 @@ class HelpdeskWorkflow:
         # Reply to the user with the FAQ answer
         message_id = initial_input.get("metadata", {}).get("message_id")
         if message_id:
-            email_result = await self.mail_flow.reply_email(message_id, resolution_body, subject=reply_subject)
+            email_result = await self.mail_flow.reply_email(
+                message_id, resolution_body, subject=reply_subject, to=initial_input.get("sender")
+            )
             workflow_state.record_history(
                 "resolve_faq",
                 email_result.get("status", "failed"),

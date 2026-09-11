@@ -21,6 +21,10 @@ class MCPConfig:
     # Optional URL of the Zoho Mail MCP server. When set, zohomail.* tools are
     # routed there instead of base_url.
     zohomail_url: str | None = None
+    # Prefix prepended to Zoho Mail tool names (server uses "ZohoMail_").
+    zohomail_tool_prefix: str = "ZohoMail_"
+    # Helpdesk mailbox address; required as fromAddress on Zoho sends/replies.
+    zohomail_from_address: str | None = None
     # Optional URL of the FAQ MCP server. When set, faq.* tools are routed
     # there instead of base_url.
     faq_url: str | None = None
@@ -45,6 +49,8 @@ class MCPConfig:
             headers=headers,
             atlassian_url=os.getenv("HELPDESK_AGENT_MCP_ATLASSIAN_URL") or None,
             zohomail_url=os.getenv("HELPDESK_AGENT_MCP_ZOHOMAIL_URL") or None,
+            zohomail_tool_prefix=os.getenv("HELPDESK_AGENT_MCP_ZOHOMAIL_TOOL_PREFIX", "ZohoMail_"),
+            zohomail_from_address=os.getenv("HELPDESK_AGENT_ZOHOMAIL_FROM_ADDRESS") or None,
             faq_url=os.getenv("HELPDESK_AGENT_MCP_FAQ_URL") or None,
             atlassian_tool_prefix=os.getenv("HELPDESK_AGENT_MCP_TOOL_PREFIX", ""),
             jira_project_key=os.getenv("HELPDESK_AGENT_JIRA_PROJECT_KEY", "HELP"),
