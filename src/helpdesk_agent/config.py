@@ -52,12 +52,31 @@ class LLMConfig:
     base_url: str | None = None
     timeout_seconds: float = 30.0
 
+    @staticmethod
+    def _normalize_base_url(base_url: str | None) -> str | None:
+        """Normalize Bedrock AgentCore gateway URLs to the OpenAI-compatible inference path."""
+        if not base_url:
+            return None
+
+        normalized = base_url.rstrip("/")
+
+        if "bedrock-agentcore" in normalized and "/inference" not in normalized:
+            return f"{normalized}/inference/v1"
+
+        if normalized.endswith("/inference"):
+            return f"{normalized}/v1"
+
+        if normalized.endswith("/inference/v1"):
+            return normalized
+
+        return normalized
+
     @classmethod
     def from_env(cls) -> "LLMConfig":
         return cls(
             api_key=os.getenv("HELPDESK_AGENT_LLM_API_KEY"),
             model=os.getenv("HELPDESK_AGENT_LLM_MODEL", "gpt-4o-mini"),
-            base_url=os.getenv("HELPDESK_AGENT_LLM_BASE_URL"),
+            base_url=cls._normalize_base_url(os.getenv("HELPDESK_AGENT_LLM_BASE_URL")),
             timeout_seconds=float(os.getenv("HELPDESK_AGENT_LLM_TIMEOUT_SECONDS", "30.0")),
         )
 

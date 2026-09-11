@@ -2,7 +2,21 @@ import os
 import unittest
 from unittest.mock import patch
 
-from helpdesk_agent.config import MCPConfig
+from helpdesk_agent.config import LLMConfig, MCPConfig
+
+
+class TestLLMConfig(unittest.TestCase):
+    def test_from_env_normalizes_bedrock_gateway_base_url(self) -> None:
+        environment = {
+            "HELPDESK_AGENT_LLM_API_KEY": "test-key",
+            "HELPDESK_AGENT_LLM_BASE_URL": "https://gateway123.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            config = LLMConfig.from_env()
+            self.assertEqual(
+                config.base_url,
+                "https://gateway123.gateway.bedrock-agentcore.us-west-2.amazonaws.com/inference/v1",
+            )
 
 
 class TestMCPConfig(unittest.TestCase):
