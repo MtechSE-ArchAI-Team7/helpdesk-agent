@@ -26,7 +26,7 @@ def create_app() -> FastAPI:
     llm_config = get_llm_config()
     if not llm_config.api_key:
         raise RuntimeError(
-            "HELPDESK_AGENT_LLM_API_KEY environment variable is required. Set it to your OpenAI API key."
+            "HELPDESK_AGENT_LLM_API_KEY environment variable is required. Set it to your Bedrock gateway auth token or OpenAI API key."
         )
 
     app = FastAPI(title="Helpdesk Agent")

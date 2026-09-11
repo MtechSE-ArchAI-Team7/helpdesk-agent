@@ -21,7 +21,9 @@ class LLMTriageClient:
     def __init__(self, config: LLMConfig | None = None) -> None:
         self.config = config or LLMConfig.from_env()
         if not self.config.api_key:
-            raise LLMError("HELPDESK_AGENT_LLM_API_KEY environment variable is required")
+            raise LLMError(
+                "HELPDESK_AGENT_LLM_API_KEY environment variable is required. Set it to your Bedrock gateway auth token or OpenAI API key."
+            )
 
         self.client = AsyncOpenAI(
             api_key=self.config.api_key,
