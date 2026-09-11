@@ -190,9 +190,14 @@ class MCPProxyAdapter:
         structured = getattr(result, "structuredContent", None) or {}
         data = {**content, **structured} if isinstance(structured, dict) else content
 
-        # Legacy async-polling shim: the old proxy returned "queued" when
-        # wait_for_completion was false or the tool was an approval request.
-        status = data.get("status", "completed")
+        # Normalize status: the legacy proxy returns a string ("completed"),
+        # while Zoho-style envelopes use {"status": {"code": 200, ...}}.
+        raw_status = data.get("status", "completed")
+        if isinstance(raw_status, dict):
+            code = raw_status.get("code")
+            status = "completed" if code in (200, 201, 202) else "failed"
+        else:
+            status = raw_status
         if not wait_for_completion or tool_name.endswith("approval_request"):
             if status == "completed":
                 status = "queued"
