@@ -47,29 +47,37 @@ def _build_server() -> FastMCP:
             "content": {"observed": True},
         }
 
-    @mcp.tool(name="zohomail.send_email")
+    @mcp.tool(name="zohomail.getMailAccounts")
+    def zohomail_get_mail_accounts(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {
+            "status": "completed",
+            "action_id": f"action-{uuid.uuid4().hex[:8]}",
+            "content": {"tool": "zohomail.getMailAccounts", "accounts": [{"accountId": "mock-account-1"}]},
+        }
+
+    @mcp.tool(name="zohomail.sendEmail")
     def zohomail_send_email(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
-            "content": {"tool": "zohomail.send_email", "arguments": arguments or {}, "message_id": f"msg-{uuid.uuid4().hex[:8]}"},
+            "content": {"tool": "zohomail.sendEmail", "arguments": arguments or {}, "message_id": f"msg-{uuid.uuid4().hex[:8]}"},
         }
 
-    @mcp.tool(name="zohomail.reply_email")
-    def zohomail_reply_email(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    @mcp.tool(name="zohomail.sendReplyMail")
+    def zohomail_send_reply_mail(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
-            "content": {"tool": "zohomail.reply_email", "arguments": arguments or {}, "message_id": f"reply-{uuid.uuid4().hex[:8]}"},
+            "content": {"tool": "zohomail.sendReplyMail", "arguments": arguments or {}, "message_id": f"reply-{uuid.uuid4().hex[:8]}"},
         }
 
-    @mcp.tool(name="zohomail.get_messages")
-    def zohomail_get_messages(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    @mcp.tool(name="zohomail.listEmails")
+    def zohomail_list_emails(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
             "content": {
-                "tool": "zohomail.get_messages",
+                "tool": "zohomail.listEmails",
                 "arguments": arguments or {},
                 "messages": [],
                 "count": 0,

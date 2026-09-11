@@ -6,10 +6,36 @@ from ...mcp import MCPProxyAdapter, MCPResponse
 
 
 class ZohoMailFlow:
-    """Handle email send/reply/read operations via the Zoho Mail MCP server."""
+    """Handle email send/reply/read operations via the Zoho Mail MCP server.
+
+    Tool names follow the Zoho Mail MCP server (sendEmail, sendReplyMail,
+    listEmails, getMailAccounts). Argument names follow the Zoho Mail API
+    conventions (accountId, toAddress, subject, content, messageId).
+    """
 
     def __init__(self, mcp_adapter: MCPProxyAdapter | None = None) -> None:
         self.mcp_adapter = mcp_adapter
+        self._account_id: str | None = None
+
+    async def _get_account_id(self) -> str | None:
+        """Discover the Zoho account ID via getMailAccounts (cached)."""
+        if self._account_id is not None:
+            return self._account_id
+        response: MCPResponse = await self.mcp_adapter.call_tool(  # type: ignore[union-attr]
+            "zohomail.getMailAccounts", {}, wait_for_completion=True
+        )
+        if response.status != "completed":
+            return None
+        content = response.content
+        # Accept a few plausible shapes: {accountId}, {accounts: [{accountId}]}
+        account_id = content.get("accountId")
+        if not account_id:
+            accounts = content.get("accounts") or content.get("data") or []
+            if accounts and isinstance(accounts, list):
+                account_id = accounts[0].get("accountId") or accounts[0].get("account_id")
+        if account_id:
+            self._account_id = str(account_id)
+        return self._account_id
 
     async def send_email(
         self,
@@ -26,14 +52,18 @@ class ZohoMailFlow:
                 "timestamp": "2024-01-01T00:00:00Z",
             }
 
+        arguments: dict[str, Any] = {
+            "toAddress": to,
+            "subject": subject,
+            "content": body,
+        }
+        account_id = await self._get_account_id()
+        if account_id:
+            arguments["accountId"] = account_id
+
         response: MCPResponse = await self.mcp_adapter.call_tool(
-            "zohomail.send_email",
-            {
-                "to": to,
-                "subject": subject,
-                "body": body,
-                "html_body": html_body,
-            },
+            "zohomail.sendEmail",
+            arguments,
             wait_for_completion=True,
             idempotency_key=f"send-email-{subject}",
         )
@@ -64,12 +94,15 @@ class ZohoMailFlow:
                 "timestamp": "2024-01-01T00:00:00Z",
             }
 
-        arguments: dict[str, Any] = {"message_id": message_id, "body": body}
+        arguments: dict[str, Any] = {"messageId": message_id, "content": body}
         if subject is not None:
             arguments["subject"] = subject
+        account_id = await self._get_account_id()
+        if account_id:
+            arguments["accountId"] = account_id
 
         response: MCPResponse = await self.mcp_adapter.call_tool(
-            "zohomail.reply_email",
+            "zohomail.sendReplyMail",
             arguments,
             wait_for_completion=True,
             idempotency_key=f"reply-{message_id}-{subject or 'default'}",
@@ -98,12 +131,17 @@ class ZohoMailFlow:
                 "count": 0,
             }
 
+        arguments: dict[str, Any] = {
+            "limit": max_results,
+            "status": "unread" if "unread" in query else "all",
+        }
+        account_id = await self._get_account_id()
+        if account_id:
+            arguments["accountId"] = account_id
+
         response: MCPResponse = await self.mcp_adapter.call_tool(
-            "zohomail.get_messages",
-            {
-                "query": query,
-                "max_results": max_results,
-            },
+            "zohomail.listEmails",
+            arguments,
             wait_for_completion=True,
         )
 

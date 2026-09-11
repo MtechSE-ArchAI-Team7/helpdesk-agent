@@ -26,7 +26,7 @@ async def test_call_tool(mock_server) -> None:
 @pytest.mark.asyncio
 async def test_async_tool_uses_pending_status(mock_server) -> None:
     adapter = MCPProxyAdapter()
-    response = await adapter.call_tool("zohomail.send_email", {"to": "a@b.c", "subject": "s", "body": "b"}, wait_for_completion=False)
+    response = await adapter.call_tool("zohomail.sendEmail", {"toAddress": "a@b.c", "subject": "s", "content": "b"}, wait_for_completion=False)
     assert response.status == "queued"
     assert response.action_id
 
@@ -46,7 +46,7 @@ def test_resolve_url_routes_by_tool_prefix() -> None:
     assert adapter._resolve_url("jira.create_issue") == "http://jira:2/mcp"
     assert adapter._resolve_url("jira.add_comment") == "http://jira:2/mcp"
     assert adapter._resolve_url("confluence.search") == "http://jira:2/mcp"
-    assert adapter._resolve_url("zohomail.reply_email") == "http://zoho:3/mcp"
+    assert adapter._resolve_url("zohomail.sendReplyMail") == "http://zoho:3/mcp"
     assert adapter._resolve_url("faq.search") == "http://faq:4/mcp"
     assert adapter._resolve_url("actions/get") == "http://default:1/mcp"
 
@@ -54,7 +54,7 @@ def test_resolve_url_routes_by_tool_prefix() -> None:
 def test_resolve_url_falls_back_to_base_url() -> None:
     """Without dedicated URLs, all tools use base_url."""
     adapter = MCPProxyAdapter(MCPConfig(base_url="http://default:1/mcp"))
-    assert adapter._resolve_url("zohomail.reply_email") == "http://default:1/mcp"
+    assert adapter._resolve_url("zohomail.sendReplyMail") == "http://default:1/mcp"
     assert adapter._resolve_url("faq.search") == "http://default:1/mcp"
     # jira.* only routes away when atlassian_url is configured
     assert adapter._resolve_url("jira.create_issue") == "http://default:1/mcp"
