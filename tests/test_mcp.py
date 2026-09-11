@@ -58,3 +58,29 @@ def test_resolve_url_falls_back_to_base_url() -> None:
     assert adapter._resolve_url("faq.search") == "http://default:1/mcp"
     # jira.* only routes away when atlassian_url is configured
     assert adapter._resolve_url("jira.create_issue") == "http://default:1/mcp"
+
+
+def test_translate_add_comment_uses_body_field() -> None:
+    """mcp-atlassian jira_add_comment requires 'body', not 'comment'."""
+    adapter = MCPProxyAdapter(MCPConfig(atlassian_url="http://jira:2/mcp"))
+    name, args = adapter._translate_atlassian_call(
+        "jira.add_comment", {"issue_key": "HELP-1", "comment": "Diagnosis required"}
+    )
+    assert name == "jira_add_comment"
+    assert args == {"issue_key": "HELP-1", "body": "Diagnosis required"}
+
+
+def test_translate_update_issue_serializes_fields_as_json_string() -> None:
+    """mcp-atlassian jira_update_issue takes 'fields' as a JSON string."""
+    import json
+
+    adapter = MCPProxyAdapter(MCPConfig(atlassian_url="http://jira:2/mcp"))
+    name, args = adapter._translate_atlassian_call(
+        "jira.update_issue",
+        {"issue_key": "HELP-1", "fields": {"summary": "New", "priority": "high"}},
+    )
+    assert name == "jira_update_issue"
+    assert args["issue_key"] == "HELP-1"
+    assert isinstance(args["fields"], str)
+    parsed = json.loads(args["fields"])
+    assert parsed == {"summary": "New", "priority": {"name": "high"}}

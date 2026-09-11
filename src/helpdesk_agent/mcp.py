@@ -110,17 +110,19 @@ class MCPProxyAdapter:
         if tool_name == "jira.add_comment":
             return f"{prefix}jira_add_comment", {
                 "issue_key": arguments.get("issue_key", ""),
-                "comment": arguments.get("comment", ""),
+                "body": arguments.get("comment", ""),
             }
         if tool_name == "jira.update_issue":
-            # mcp-atlassian's jira_update_issue takes fields as additional
-            # keyword arguments (additionalProperties passthrough).
+            # mcp-atlassian's jira_update_issue takes `fields` as a JSON string.
             issue_key = arguments.get("issue_key", "")
             fields = dict(arguments.get("fields") or {})
             priority = fields.pop("priority", None)
             if priority is not None:
                 fields["priority"] = {"name": priority}
-            return f"{prefix}jira_update_issue", {"issue_key": issue_key, "fields": fields}
+            return f"{prefix}jira_update_issue", {
+                "issue_key": issue_key,
+                "fields": json.dumps(fields),
+            }
         # Generic fallback: convert dots to underscores, pass args through
         return f"{prefix}{tool_name.replace('.', '_')}", arguments
 
