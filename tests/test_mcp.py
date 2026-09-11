@@ -26,7 +26,7 @@ async def test_call_tool(mock_server) -> None:
 @pytest.mark.asyncio
 async def test_async_tool_uses_pending_status(mock_server) -> None:
     adapter = MCPProxyAdapter()
-    response = await adapter.call_tool("zohomail.ZohoMail_sendEmail", {"path_variables": {"accountId": "a1"}, "body": {"toAddress": "a@b.c", "subject": "s", "content": "b"}}, wait_for_completion=False)
+    response = await adapter.call_tool("zohomail.ZohoMail_sendEmail", {"path_variables": {"accountId": "a1"}, "body": {"fromAddress": "h@d.c", "toAddress": "a@b.c", "subject": "s", "content": "b"}}, wait_for_completion=False)
     assert response.status == "queued"
     assert response.action_id
 
@@ -85,3 +85,10 @@ def test_translate_update_issue_serializes_fields_as_json_string() -> None:
     parsed = json.loads(args["fields"])
     # priority is passed as a plain name string, not {"name": ...}
     assert parsed == {"summary": "New", "priority": "high"}
+
+
+def test_translate_zohomail_strips_routing_prefix() -> None:
+    """The internal 'zohomail.' prefix is stripped before calling the server."""
+    adapter = MCPProxyAdapter(MCPConfig(zohomail_url="http://zoho:3/mcp"))
+    assert adapter._translate_zohomail_call("zohomail.ZohoMail_sendReplyEmail") == "ZohoMail_sendReplyEmail"
+    assert adapter._translate_zohomail_call("zohomail.ZohoMail_getMailAccounts") == "ZohoMail_getMailAccounts"

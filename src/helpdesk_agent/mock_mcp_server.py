@@ -47,38 +47,49 @@ def _build_server() -> FastMCP:
             "content": {"observed": True},
         }
 
-    @mcp.tool(name="zohomail.ZohoMail_getMailAccounts")
-    def zohomail_get_mail_accounts(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    @mcp.tool(name="ZohoMail_getMailAccounts")
+    def zohomail_get_mail_accounts() -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
-            "content": {"tool": "zohomail.ZohoMail_getMailAccounts", "accounts": [{"accountId": "mock-account-1"}]},
+            "content": {"tool": "ZohoMail_getMailAccounts", "accounts": [{"accountId": "mock-account-1"}]},
         }
 
-    @mcp.tool(name="zohomail.ZohoMail_sendEmail")
-    def zohomail_send_email(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        return {
-            "status": "completed",
-            "action_id": f"action-{uuid.uuid4().hex[:8]}",
-            "content": {"tool": "zohomail.ZohoMail_sendEmail", "arguments": arguments or {}, "messageId": f"{uuid.uuid4().int % 10**12}"},
-        }
-
-    @mcp.tool(name="zohomail.ZohoMail_sendReplyEmail")
-    def zohomail_send_reply_email(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        return {
-            "status": "completed",
-            "action_id": f"action-{uuid.uuid4().hex[:8]}",
-            "content": {"tool": "zohomail.ZohoMail_sendReplyEmail", "arguments": arguments or {}, "messageId": f"{uuid.uuid4().int % 10**12}"},
-        }
-
-    @mcp.tool(name="zohomail.ZohoMail_listEmails")
-    def zohomail_list_emails(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    @mcp.tool(name="ZohoMail_sendEmail")
+    def zohomail_send_email(path_variables: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
             "content": {
-                "tool": "zohomail.ZohoMail_listEmails",
-                "arguments": arguments or {},
+                "tool": "ZohoMail_sendEmail",
+                "path_variables": path_variables,
+                "body": body,
+                "messageId": f"{uuid.uuid4().int % 10**12}",
+            },
+        }
+
+    @mcp.tool(name="ZohoMail_sendReplyEmail")
+    def zohomail_send_reply_email(path_variables: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "completed",
+            "action_id": f"action-{uuid.uuid4().hex[:8]}",
+            "content": {
+                "tool": "ZohoMail_sendReplyEmail",
+                "path_variables": path_variables,
+                "body": body,
+                "messageId": f"{uuid.uuid4().int % 10**12}",
+            },
+        }
+
+    @mcp.tool(name="ZohoMail_listEmails")
+    def zohomail_list_emails(path_variables: dict[str, Any], query_params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {
+            "status": "completed",
+            "action_id": f"action-{uuid.uuid4().hex[:8]}",
+            "content": {
+                "tool": "ZohoMail_listEmails",
+                "path_variables": path_variables,
+                "query_params": query_params or {},
                 "data": [],
             },
         }

@@ -87,6 +87,14 @@ class MCPProxyAdapter:
     def _is_atlassian_tool(self, tool_name: str) -> bool:
         return self.config.atlassian_url is not None and tool_name.startswith(self._ATLASSIAN_PREFIXES)
 
+    def _is_zohomail_tool(self, tool_name: str) -> bool:
+        return tool_name.startswith(self._ZOHOMAIL_PREFIX)
+
+    def _translate_zohomail_call(self, tool_name: str) -> str:
+        """Strip the internal 'zohomail.' routing prefix; the remainder is the
+        real tool name on the Zoho server (e.g. 'ZohoMail_sendReplyEmail')."""
+        return tool_name.removeprefix(self._ZOHOMAIL_PREFIX)
+
     def _translate_atlassian_call(
         self, tool_name: str, arguments: dict[str, Any]
     ) -> tuple[str, dict[str, Any]]:
@@ -139,6 +147,12 @@ class MCPProxyAdapter:
         if self._is_atlassian_tool(tool_name):
             url = self.config.atlassian_url or self.config.base_url
             tool_name, tool_arguments = self._translate_atlassian_call(tool_name, base_arguments)
+        elif self._is_zohomail_tool(tool_name):
+            url = self._resolve_url(tool_name)
+            tool_name = self._translate_zohomail_call(tool_name)
+            # Zoho's server validates strictly (no additionalProperties), so send
+            # the arguments as-is, without the legacy envelope keys.
+            tool_arguments = base_arguments
         else:
             url = self._resolve_url(tool_name)
             # Preserve the legacy extra params the mock/proxy servers expect by
