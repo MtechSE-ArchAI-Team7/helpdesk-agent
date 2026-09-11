@@ -9,9 +9,8 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from fastapi import Depends, FastAPI, HTTPException
 
-from .core.cases import CaseStore
 from .core.workflow import HelpdeskWorkflow
-from .dependencies import get_a2a_config, get_case_store, get_conversation_store, get_llm_config, get_workflow
+from .dependencies import get_a2a_config, get_conversation_store, get_llm_config, get_workflow
 from .modules.a2a.agent_card import A2A_RPC_PATH, build_agent_card
 from .modules.a2a.executor import HelpdeskAgentExecutor
 from .modules.chat.router import router as chat_router
@@ -49,13 +48,12 @@ def create_app() -> FastAPI:
     async def invocations(
         body: dict[str, Any],
         workflow: Annotated[HelpdeskWorkflow, Depends(get_workflow)],
-        case_store: Annotated[CaseStore, Depends(get_case_store)],
     ) -> dict[str, Any]:
         path = body.get("path", "/webhooks/email")
         if path != "/webhooks/email":
             raise HTTPException(status_code=404, detail=f"unsupported path: {path}")
         payload = body.get("payload", body)
-        return await email_webhook(EmailWebhook.model_validate(payload), workflow, case_store)
+        return await email_webhook(EmailWebhook.model_validate(payload), workflow)
 
     # Include module routers
     app.include_router(email_router)

@@ -12,7 +12,6 @@ class WorkflowState:
     current_step: str = "triage"
     messages: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
-    approvals: list[dict[str, Any]] = field(default_factory=list)
     ticket: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -34,7 +33,6 @@ class WorkflowState:
             "current_step": self.current_step,
             "messages": self.messages,
             "evidence": self.evidence,
-            "approvals": self.approvals,
             "ticket": self.ticket,
             "metadata": self.metadata,
             "history": self.history,

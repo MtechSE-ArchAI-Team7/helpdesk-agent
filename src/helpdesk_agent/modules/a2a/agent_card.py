@@ -16,7 +16,7 @@ def build_agent_card(config: A2AConfig) -> AgentCard:
         name=config.agent_name,
         description=(
             "Helpdesk triage agent: classifies IT support requests, answers from "
-            "the FAQ knowledge base, files Jira tickets, and manages approvals."
+            "the FAQ knowledge base, and files and updates Jira tickets."
         ),
         url=f"{config.base_url}{A2A_RPC_PATH}",
         version="0.1.0",
@@ -33,8 +33,7 @@ def build_agent_card(config: A2AConfig) -> AgentCard:
                 name="Triage helpdesk request",
                 description=(
                     "Classify an IT support request, resolve it from the FAQ when "
-                    "possible, or file and track a Jira ticket (with approval when "
-                    "production-impacting)."
+                    "possible, or file and track a Jira ticket."
                 ),
                 tags=["helpdesk", "triage", "it-support"],
                 examples=[

@@ -13,7 +13,6 @@ def main() -> None:
     parser.add_argument("--source", default="email", choices=["email", "slack"])
     parser.add_argument("--sender", default="ops.user")
     parser.add_argument("--service", default="identity")
-    parser.add_argument("--requires-approval", action="store_true")
     args = parser.parse_args()
 
     workflow = HelpdeskWorkflow()
@@ -25,7 +24,6 @@ def main() -> None:
                 "source": args.source,
                 "sender": args.sender,
                 "service": args.service,
-                "metadata": {"requires_approval": args.requires_approval},
             }
         )
     )

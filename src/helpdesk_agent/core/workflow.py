@@ -5,16 +5,22 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from ..config import MCPConfig, TriageConfig
 from ..mcp import MCPProxyAdapter
 from ..models import WorkflowState
-from ..modules.approval.service import SlackApprovalFlow
-from ..modules.email.service import GmailFlow
+from ..modules.email.service import ZohoMailFlow
 from ..modules.faq.service import FAQFlow
-from ..modules.ticketing.service import JiraTicketFlow
+from ..modules.ticketing.service import JiraTicketFlow, extract_ticket_id
 from ..modules.triage.llm import LLMError, LLMTriageClient
 from ..modules.triage.schema import TriageResult
 
 logger = logging.getLogger(__name__)
+
+#: Maximum number of clarification rounds before escalating to diagnosis.
+MAX_CLARIFICATION_ROUNDS = 2
+
+#: Marker used in Jira comments so clarification rounds can be counted from the ticket.
+CLARIFICATION_COMMENT_MARKER = "pending clarifications"
 
 
 class GraphState(TypedDict):
@@ -24,6 +30,8 @@ class GraphState(TypedDict):
     initial_input: dict[str, Any]
     triage_result: TriageResult | None
     faq_results: dict[str, Any] | None
+    ticket_id: str | None
+    existing_ticket: dict[str, Any] | None
 
 
 class HelpdeskWorkflow:
@@ -33,11 +41,13 @@ class HelpdeskWorkflow:
         self,
         mcp_adapter: MCPProxyAdapter | None = None,
         llm_client: LLMTriageClient | None = None,
+        triage_config: TriageConfig | None = None,
     ) -> None:
         self.mcp_adapter = mcp_adapter
         self.llm_client = llm_client or LLMTriageClient()
-        self.gmail_flow = GmailFlow(mcp_adapter)
-        self.slack_flow = SlackApprovalFlow(mcp_adapter)
+        self.triage_config = triage_config or TriageConfig.from_env()
+        self.project_key = MCPConfig.from_env().jira_project_key
+        self.mail_flow = ZohoMailFlow(mcp_adapter)
         self.ticket_flow = JiraTicketFlow(mcp_adapter)
         self.faq_flow = FAQFlow(mcp_adapter)
         self.graph = self._build_graph()
@@ -51,26 +61,40 @@ class HelpdeskWorkflow:
         graph = StateGraph(GraphState)
 
         # Add nodes
+        graph.add_node("load_ticket", self._load_ticket_node)
+        graph.add_node("create_ticket", self._create_ticket_node)
+        graph.add_node("acknowledge", self._acknowledge_node)
         graph.add_node("triage", self._triage_node)
+        graph.add_node("update_ticket", self._update_ticket_node)
         graph.add_node("check_clarification", self._check_clarification_node)
         graph.add_node("clarify", self._clarify_node)
         graph.add_node("faq_gate", self._faq_gate_node)
         graph.add_node("resolve_faq", self._resolve_faq_node)
-        graph.add_node("ticket", self._ticket_node)
-        graph.add_node("approval", self._approval_node)
-        graph.add_node("notify", self._notify_node)
+        graph.add_node("diagnose", self._diagnose_node)
         graph.add_node("email_read", self._email_read_node)
 
         # Set entry point
-        graph.set_entry_point("triage")
+        graph.set_entry_point("load_ticket")
 
         # Add edges
-        graph.add_edge("triage", "check_clarification")
+        graph.add_conditional_edges(
+            "load_ticket",
+            self._has_existing_ticket,
+            {
+                "existing": "triage",
+                "new": "create_ticket",
+            },
+        )
+        graph.add_edge("create_ticket", "acknowledge")
+        graph.add_edge("acknowledge", "triage")
+        graph.add_edge("triage", "update_ticket")
+        graph.add_edge("update_ticket", "check_clarification")
         graph.add_conditional_edges(
             "check_clarification",
             self._should_clarify,
             {
                 "clarify": "clarify",
+                "diagnose": "diagnose",
                 "faq_gate": "faq_gate",
             },
         )
@@ -80,23 +104,136 @@ class HelpdeskWorkflow:
             self._should_resolve_faq,
             {
                 "resolve_faq": "resolve_faq",
-                "ticket": "ticket",
+                "diagnose": "diagnose",
             },
         )
         graph.add_edge("resolve_faq", END)
-        graph.add_conditional_edges(
-            "ticket",
-            self._needs_approval,
-            {
-                "approval": "approval",
-                "notify": "notify",
-            },
-        )
-        graph.add_edge("approval", END)
-        graph.add_edge("notify", END)
+        graph.add_edge("diagnose", END)
         graph.add_edge("email_read", END)
 
         return graph.compile()
+
+    @staticmethod
+    def _split_subject_body(initial_input: dict[str, Any]) -> tuple[str, str]:
+        """Split the incoming input into (subject, body)."""
+        subject = initial_input.get("subject", "")
+        summary_text = initial_input.get("summary", "No summary provided")
+        parts = summary_text.split("\n\n", 1)
+        if not subject:
+            subject = parts[0] if parts else "No subject"
+        body = parts[1] if len(parts) > 1 else summary_text
+        return subject, body
+
+    async def _load_ticket_node(self, state: GraphState) -> GraphState:
+        """Detect a ticket ID in the subject and load the existing Jira ticket."""
+        workflow_state = state["workflow_state"]
+        initial_input = state["initial_input"]
+        subject, _ = self._split_subject_body(initial_input)
+
+        ticket_id = extract_ticket_id(subject, self.project_key)
+        if not ticket_id:
+            logger.info("case=%s stage=load_ticket decision=new reason=no_ticket_id", workflow_state.case_id)
+            state["ticket_id"] = None
+            state["existing_ticket"] = None
+            return state
+
+        logger.info("case=%s stage=load_ticket ticket_id=%s", workflow_state.case_id, ticket_id)
+        result = await self.ticket_flow.get_ticket(ticket_id)
+        if result.get("status") in ("success", "mocked"):
+            state["ticket_id"] = ticket_id
+            state["existing_ticket"] = result
+            workflow_state.case_id = ticket_id
+            workflow_state.ticket = result
+            workflow_state.record_history("load_ticket", "completed", f"Loaded existing ticket {ticket_id}")
+            logger.info("case=%s stage=load_ticket status=found ticket_id=%s", ticket_id, ticket_id)
+        else:
+            # Stale/unknown reference: treat as a new issue.
+            state["ticket_id"] = None
+            state["existing_ticket"] = None
+            workflow_state.record_history(
+                "load_ticket",
+                "not_found",
+                f"Ticket {ticket_id} not found in Jira; treating as new issue",
+            )
+            logger.warning(
+                "case=%s stage=load_ticket status=not_found ticket_id=%s error=%s",
+                workflow_state.case_id,
+                ticket_id,
+                result.get("error", "unknown"),
+            )
+        return state
+
+    def _has_existing_ticket(self, state: GraphState) -> str:
+        """Route based on whether an existing ticket was loaded."""
+        return "existing" if state.get("existing_ticket") else "new"
+
+    async def _create_ticket_node(self, state: GraphState) -> GraphState:
+        """Create a new Jira ticket for a new issue."""
+        workflow_state = state["workflow_state"]
+        initial_input = state["initial_input"]
+        subject, body = self._split_subject_body(initial_input)
+
+        logger.info("case=%s stage=create_ticket status=started", workflow_state.case_id)
+        ticket_result = await self.ticket_flow.create_ticket(
+            workflow_state.case_id,
+            subject,
+            body,
+            "unknown",
+            "medium",
+            initial_input.get("sender", "unknown"),
+        )
+        workflow_state.ticket = ticket_result
+        workflow_state.record_history(
+            "create_ticket",
+            ticket_result.get("status", "failed"),
+            f"Ticket creation: {ticket_result.get('ticket_id', ticket_result.get('error', 'unknown'))}",
+        )
+        ticket_id = ticket_result.get("ticket_id")
+        if ticket_id:
+            state["ticket_id"] = ticket_id
+            workflow_state.case_id = ticket_id
+        logger.info(
+            "case=%s stage=create_ticket status=%s ticket_id=%s",
+            workflow_state.case_id,
+            ticket_result.get("status", "failed"),
+            ticket_id or ticket_result.get("error", "unknown"),
+        )
+        return state
+
+    async def _acknowledge_node(self, state: GraphState) -> GraphState:
+        """Reply to the user acknowledging the new ticket, with the ticket ID in the subject."""
+        workflow_state = state["workflow_state"]
+        initial_input = state["initial_input"]
+        ticket_id = state.get("ticket_id")
+        subject, _ = self._split_subject_body(initial_input)
+
+        logger.info("case=%s stage=acknowledge status=started", workflow_state.case_id)
+
+        ack_subject = f"[{ticket_id}] {subject}" if ticket_id else subject
+        ack_body = (
+            "Thank you for contacting support.\n\n"
+            f"Your request has been logged as ticket {ticket_id or 'N/A'}. "
+            "Please keep this ticket ID in the subject line of any follow-up replies "
+            "so we can link them to your case.\n\n"
+            "Best regards,\nHelpdesk Team"
+        )
+
+        message_id = initial_input.get("metadata", {}).get("message_id")
+        if message_id:
+            email_result = await self.mail_flow.reply_email(message_id, ack_body, subject=ack_subject)
+            workflow_state.record_history(
+                "acknowledge",
+                email_result.get("status", "failed"),
+                f"Acknowledgment sent: {email_result.get('reply_message_id', email_result.get('error', 'unknown'))}",
+            )
+            logger.info(
+                "case=%s stage=acknowledge email_status=%s",
+                workflow_state.case_id,
+                email_result.get("status", "failed"),
+            )
+        else:
+            logger.info("case=%s stage=acknowledge note=no_message_id_email_not_sent", workflow_state.case_id)
+        return state
 
     async def _triage_node(self, state: GraphState) -> GraphState:
         """Perform LLM triage on the input."""
@@ -106,16 +243,23 @@ class HelpdeskWorkflow:
 
         logger.info("case=%s stage=triage status=started", case_id)
 
-        # Extract subject and body
-        summary_text = initial_input.get("summary", "No summary provided")
-        parts = summary_text.split("\n\n", 1)
-        subject = parts[0] if parts else "No subject"
-        body = parts[1] if len(parts) > 1 else summary_text
+        subject, body = self._split_subject_body(initial_input)
 
         workflow_state.record_history("triage", "started", f"Received {initial_input.get('source', 'email')} request")
 
+        # For existing tickets, feed the ticket's current state in as context.
+        history_snippets: list[str] | None = None
+        existing_ticket = state.get("existing_ticket")
+        if existing_ticket:
+            history_snippets = [
+                f"Existing ticket {existing_ticket.get('ticket_id')}: {existing_ticket.get('summary', '')}",
+                f"Ticket description: {existing_ticket.get('description', '')}",
+            ]
+            for comment in existing_ticket.get("comments", []) or []:
+                history_snippets.append(f"Ticket comment: {comment}")
+
         try:
-            triage_result = await self.llm_client.triage_email(subject, body)
+            triage_result = await self.llm_client.triage_email(subject, body, history_snippets=history_snippets)
             state["triage_result"] = triage_result
 
             workflow_state.triage = {
@@ -154,10 +298,50 @@ class HelpdeskWorkflow:
 
         return state
 
+    async def _update_ticket_node(self, state: GraphState) -> GraphState:
+        """Update the Jira ticket's fields to reflect the latest triage results."""
+        workflow_state = state["workflow_state"]
+        triage_result = state.get("triage_result")
+        ticket_id = state.get("ticket_id")
+        case_id = workflow_state.case_id
+
+        if triage_result is None or not ticket_id:
+            logger.info("case=%s stage=update_ticket note=skipped", case_id)
+            return state
+
+        update_result = await self.ticket_flow.update_ticket(
+            ticket_id,
+            summary=triage_result.summary,
+            description=triage_result.raw_text,
+            priority=triage_result.priority,
+        )
+        workflow_state.record_history(
+            "update_ticket",
+            update_result.get("status", "failed"),
+            f"Ticket {ticket_id} fields updated: {update_result.get('updated', update_result.get('error', 'unknown'))}",
+        )
+        logger.info(
+            "case=%s stage=update_ticket status=%s ticket_id=%s",
+            case_id,
+            update_result.get("status", "failed"),
+            ticket_id,
+        )
+        return state
+
     async def _check_clarification_node(self, state: GraphState) -> GraphState:
         """Check if clarification is needed."""
         # This node just passes through, the decision is made in _should_clarify
         return state
+
+    def _clarification_rounds(self, state: GraphState) -> int:
+        """Count prior clarification rounds from the ticket's comments."""
+        existing_ticket = state.get("existing_ticket") or {}
+        rounds = 0
+        for comment in existing_ticket.get("comments", []) or []:
+            text = comment.get("body", "") if isinstance(comment, dict) else str(comment)
+            if CLARIFICATION_COMMENT_MARKER in text.lower():
+                rounds += 1
+        return rounds
 
     def _should_clarify(self, state: GraphState) -> str:
         """Determine if clarification is needed."""
@@ -167,37 +351,44 @@ class HelpdeskWorkflow:
             logger.info("case=%s gate=clarification decision=faq_gate reason=no_triage_result", case_id)
             return "faq_gate"
 
-        # Check if we should skip clarification (e.g., already asked once)
-        initial_input = state["initial_input"]
-        if initial_input.get("metadata", {}).get("skip_clarification"):
-            logger.info("case=%s gate=clarification decision=faq_gate reason=skip_clarification", case_id)
-            return "faq_gate"
-
-        # Check confidence threshold
-        threshold = 0.6  # TODO: Get from config
-        if triage_result.confidence < threshold or triage_result.missing_info:
+        threshold = self.triage_config.confidence_threshold
+        needs_clarification = triage_result.confidence < threshold or bool(triage_result.missing_info)
+        if not needs_clarification:
             logger.info(
-                "case=%s gate=clarification decision=clarify reason=needs_clarification "
-                "confidence=%.2f threshold=%.2f missing_info=%d",
+                "case=%s gate=clarification decision=faq_gate reason=confident confidence=%.2f threshold=%.2f",
                 case_id,
                 triage_result.confidence,
                 threshold,
-                len(triage_result.missing_info),
             )
-            return "clarify"
+            return "faq_gate"
+
+        rounds = self._clarification_rounds(state)
+        if rounds >= MAX_CLARIFICATION_ROUNDS:
+            logger.info(
+                "case=%s gate=clarification decision=diagnose reason=max_rounds rounds=%d max=%d",
+                case_id,
+                rounds,
+                MAX_CLARIFICATION_ROUNDS,
+            )
+            return "diagnose"
+
         logger.info(
-            "case=%s gate=clarification decision=faq_gate reason=confident confidence=%.2f threshold=%.2f",
+            "case=%s gate=clarification decision=clarify reason=needs_clarification "
+            "confidence=%.2f threshold=%.2f missing_info=%d rounds=%d",
             case_id,
             triage_result.confidence,
             threshold,
+            len(triage_result.missing_info),
+            rounds,
         )
-        return "faq_gate"
+        return "clarify"
 
     async def _clarify_node(self, state: GraphState) -> GraphState:
-        """Send clarification email."""
+        """Send clarification questions to the user and mark the ticket pending clarifications."""
         workflow_state = state["workflow_state"]
         triage_result = state.get("triage_result")
         initial_input = state["initial_input"]
+        ticket_id = state.get("ticket_id")
         case_id = workflow_state.case_id
 
         logger.info("case=%s stage=clarify status=started", case_id)
@@ -210,28 +401,45 @@ class HelpdeskWorkflow:
         # Draft clarification email
         clarification_body = await self.llm_client.draft_clarification(triage_result, triage_result.raw_text)
 
-        # Send email
-        reply_to = initial_input.get("reply_to")
-        if reply_to:
-            email_result = await self.gmail_flow.send_email(
-                to=reply_to,
-                subject=f"Re: {triage_result.summary}",
-                body=clarification_body,
-                reply_to=reply_to,
-            )
+        subject, _ = self._split_subject_body(initial_input)
+        reply_subject = f"[{ticket_id}] {subject}" if ticket_id else subject
+
+        # Reply to the user with the clarifying questions
+        message_id = initial_input.get("metadata", {}).get("message_id")
+        if message_id:
+            email_result = await self.mail_flow.reply_email(message_id, clarification_body, subject=reply_subject)
             workflow_state.record_history(
                 "clarify",
                 email_result.get("status", "failed"),
-                f"Clarification email sent: {email_result.get('message_id', 'unknown')}",
+                f"Clarification email sent: {email_result.get('reply_message_id', email_result.get('error', 'unknown'))}",
             )
             logger.info(
-                "case=%s stage=clarify email_status=%s message_id=%s",
+                "case=%s stage=clarify email_status=%s",
                 case_id,
                 email_result.get("status", "failed"),
-                email_result.get("message_id", email_result.get("error", "unknown")),
             )
         else:
-            logger.info("case=%s stage=clarify note=no_reply_to_email_not_sent", case_id)
+            logger.info("case=%s stage=clarify note=no_message_id_email_not_sent", case_id)
+
+        # Update the Jira ticket as pending clarifications
+        if ticket_id:
+            questions = "\n".join(f"- {q}" for q in triage_result.clarifying_questions) or "- (general details requested)"
+            comment_body = (
+                f"Pending clarifications — questions sent to the requester:\n{questions}\n\n"
+                f"Missing info: {', '.join(triage_result.missing_info) or 'n/a'}"
+            )
+            comment_result = await self.ticket_flow.add_comment(ticket_id, comment_body)
+            workflow_state.record_history(
+                "clarify",
+                comment_result.get("status", "failed"),
+                f"Ticket comment added: pending clarifications",
+            )
+            logger.info(
+                "case=%s stage=clarify comment_status=%s ticket_id=%s",
+                case_id,
+                comment_result.get("status", "failed"),
+                ticket_id,
+            )
 
         workflow_state.current_step = "awaiting_clarification"
         workflow_state.clarification = {
@@ -289,16 +497,16 @@ class HelpdeskWorkflow:
         case_id = state["workflow_state"].case_id
         faq_results = state.get("faq_results") or {}
         if faq_results.get("status") != "success":
-            logger.info("case=%s gate=faq decision=ticket reason=faq_search_failed", case_id)
-            return "ticket"
+            logger.info("case=%s gate=faq decision=diagnose reason=faq_search_failed", case_id)
+            return "diagnose"
 
         results = faq_results.get("results", [])
         if not results:
-            logger.info("case=%s gate=faq decision=ticket reason=no_faq_matches", case_id)
-            return "ticket"
+            logger.info("case=%s gate=faq decision=diagnose reason=no_faq_matches", case_id)
+            return "diagnose"
 
         # Check relevance threshold
-        threshold = 0.7  # TODO: Get from config
+        threshold = self.triage_config.faq_relevance_threshold
         top_result = results[0]
         if top_result.get("score", 0) >= threshold:
             logger.info(
@@ -309,18 +517,19 @@ class HelpdeskWorkflow:
             )
             return "resolve_faq"
         logger.info(
-            "case=%s gate=faq decision=ticket reason=below_threshold score=%.3f threshold=%.2f",
+            "case=%s gate=faq decision=diagnose reason=below_threshold score=%.3f threshold=%.2f",
             case_id,
             top_result.get("score", 0),
             threshold,
         )
-        return "ticket"
+        return "diagnose"
 
     async def _resolve_faq_node(self, state: GraphState) -> GraphState:
-        """Resolve with FAQ solution."""
+        """Resolve with FAQ solution: reply to the user and comment on the ticket."""
         workflow_state = state["workflow_state"]
         faq_results = state.get("faq_results")
         initial_input = state["initial_input"]
+        ticket_id = state.get("ticket_id")
         case_id = workflow_state.case_id
 
         logger.info("case=%s stage=resolve_faq status=started", case_id)
@@ -335,152 +544,98 @@ class HelpdeskWorkflow:
         # Draft resolution email
         resolution_body = await self.llm_client.draft_resolution(top_result, workflow_state.summary)
 
-        # Send email
-        reply_to = initial_input.get("reply_to")
-        if reply_to:
-            email_result = await self.gmail_flow.send_email(
-                to=reply_to,
-                subject=f"Re: {workflow_state.summary}",
-                body=resolution_body,
-                reply_to=reply_to,
-            )
+        subject, _ = self._split_subject_body(initial_input)
+        reply_subject = f"[{ticket_id}] {subject}" if ticket_id else subject
+
+        # Reply to the user with the FAQ answer
+        message_id = initial_input.get("metadata", {}).get("message_id")
+        if message_id:
+            email_result = await self.mail_flow.reply_email(message_id, resolution_body, subject=reply_subject)
             workflow_state.record_history(
                 "resolve_faq",
                 email_result.get("status", "failed"),
-                f"Resolution email sent: {email_result.get('message_id', 'unknown')}",
+                f"Resolution email sent: {email_result.get('reply_message_id', email_result.get('error', 'unknown'))}",
             )
             logger.info(
-                "case=%s stage=resolve_faq email_status=%s message_id=%s",
+                "case=%s stage=resolve_faq email_status=%s",
                 case_id,
                 email_result.get("status", "failed"),
-                email_result.get("message_id", email_result.get("error", "unknown")),
             )
 
-        workflow_state.current_step = "resolved_faq"
+        # Update the Jira ticket: FAQ answer provided
+        if ticket_id:
+            comment_body = (
+                f"FAQ answer provided to the requester.\n\n"
+                f"Matched FAQ: {top_result.get('title', 'unknown')} "
+                f"(score: {top_result.get('score', 0):.3f})"
+            )
+            comment_result = await self.ticket_flow.add_comment(ticket_id, comment_body)
+            workflow_state.record_history(
+                "resolve_faq",
+                comment_result.get("status", "failed"),
+                "Ticket comment added: FAQ answer provided",
+            )
+            logger.info(
+                "case=%s stage=resolve_faq comment_status=%s ticket_id=%s",
+                case_id,
+                comment_result.get("status", "failed"),
+                ticket_id,
+            )
+
+        workflow_state.current_step = "faq_answer_provided"
         logger.info("case=%s stage=resolve_faq status=completed", case_id)
         return state
 
-    async def _ticket_node(self, state: GraphState) -> GraphState:
-        """Create support ticket."""
+    async def _diagnose_node(self, state: GraphState) -> GraphState:
+        """Mark the ticket as requiring diagnosis (no FAQ match or clarification exhausted)."""
         workflow_state = state["workflow_state"]
         triage_result = state.get("triage_result")
-        initial_input = state["initial_input"]
+        ticket_id = state.get("ticket_id")
         case_id = workflow_state.case_id
 
-        logger.info("case=%s stage=ticket status=started", case_id)
+        logger.info("case=%s stage=diagnose status=started", case_id)
 
-        if triage_result is None:
-            workflow_state.record_history("ticketing", "failed", "No triage result available")
-            logger.error("case=%s stage=ticket status=failed error=no_triage_result", case_id)
-            return state
+        rounds = self._clarification_rounds(state)
+        triage_summary = triage_result.summary if triage_result else workflow_state.summary
 
-        ticket_result = await self.ticket_flow.create_ticket(
-            workflow_state.case_id,
-            triage_result.summary,
-            triage_result.raw_text,
-            triage_result.service,
-            triage_result.priority,
-            initial_input.get("sender", "unknown"),
-        )
-        workflow_state.ticket = ticket_result
-        workflow_state.record_history(
-            "ticketing",
-            ticket_result.get("status", "failed"),
-            f"Ticket creation: {ticket_result.get('ticket_id', ticket_result.get('error', 'unknown'))}",
-        )
-        logger.info(
-            "case=%s stage=ticket status=%s ticket_id=%s",
-            case_id,
-            ticket_result.get("status", "failed"),
-            ticket_result.get("ticket_id", ticket_result.get("error", "unknown")),
-        )
-        workflow_state.current_step = "investigate"
-
-        return state
-
-    def _needs_approval(self, state: GraphState) -> str:
-        """Check if approval is needed."""
-        workflow_state = state["workflow_state"]
-        if workflow_state.metadata.get("requires_approval"):
-            logger.info("case=%s gate=approval decision=approval reason=requires_approval", workflow_state.case_id)
-            return "approval"
-        logger.info("case=%s gate=approval decision=notify reason=no_approval_required", workflow_state.case_id)
-        return "notify"
-
-    async def _approval_node(self, state: GraphState) -> GraphState:
-        """Request approval for production-impacting changes."""
-        workflow_state = state["workflow_state"]
-        case_id = workflow_state.case_id
-
-        logger.info("case=%s stage=approval status=started", case_id)
-
-        approval_request = await self.slack_flow.request_approval(
-            workflow_state.case_id,
-            workflow_state.summary,
-            approver=workflow_state.metadata.get("approver", "ops-lead"),
-        )
-        workflow_state.approvals.append(
-            {
-                "case_id": workflow_state.case_id,
-                "status": approval_request["status"],
-                "action_id": approval_request.get("action_id"),
-                "message": approval_request["message"],
-            }
-        )
-        workflow_state.record_history("remediate", "pending_approval", "Production-impacting change requires approval")
-        workflow_state.current_step = "approval"
-
-        return state
-
-    async def _notify_node(self, state: GraphState) -> GraphState:
-        """Send notification email."""
-        workflow_state = state["workflow_state"]
-        initial_input = state["initial_input"]
-        case_id = workflow_state.case_id
-
-        logger.info("case=%s stage=notify status=started", case_id)
-
-        workflow_state.record_history("investigate", "completed", "Investigation evidence collected")
-        workflow_state.current_step = "remediate"
-        workflow_state.record_history("remediate", "completed", "Remediation prepared")
-        workflow_state.current_step = "verify"
-
-        # Send a follow-up email via Gmail MCP if reply-to address is available
-        reply_to = initial_input.get("reply_to")
-        if reply_to:
-            ticket = workflow_state.ticket or {}
-            email_result = await self.gmail_flow.send_email(
-                to=reply_to,
-                subject=f"Re: {workflow_state.summary}",
-                body=f"Your case {workflow_state.case_id} has been created and is being investigated.\n\n"
-                f"Ticket: {ticket.get('ticket_id', 'N/A')}",
-                reply_to=reply_to,
+        if rounds >= MAX_CLARIFICATION_ROUNDS:
+            comment_body = (
+                f"Diagnosis required — clarification attempts exhausted "
+                f"({rounds}/{MAX_CLARIFICATION_ROUNDS} rounds).\n\n"
+                f"Latest triage summary: {triage_summary}"
             )
+        else:
+            comment_body = (
+                "Diagnosis required — no matching FAQ answer found.\n\n"
+                f"Triage summary: {triage_summary}"
+            )
+
+        if ticket_id:
+            comment_result = await self.ticket_flow.add_comment(ticket_id, comment_body)
             workflow_state.record_history(
-                "email",
-                email_result.get("status", "failed"),
-                f"Follow-up email sent: {email_result.get('message_id', email_result.get('error', 'unknown'))}",
+                "diagnose",
+                comment_result.get("status", "failed"),
+                "Ticket comment added: diagnosis required",
             )
             logger.info(
-                "case=%s stage=notify email_status=%s message_id=%s",
+                "case=%s stage=diagnose comment_status=%s ticket_id=%s",
                 case_id,
-                email_result.get("status", "failed"),
-                email_result.get("message_id", email_result.get("error", "unknown")),
+                comment_result.get("status", "failed"),
+                ticket_id,
             )
+        else:
+            workflow_state.record_history("diagnose", "skipped", "No ticket available for comment")
 
-        workflow_state.record_history("verify", "completed", "Verification checks passed")
-        workflow_state.current_step = "closed"
-        workflow_state.record_history("close", "completed", "Case closed and ticket updated")
-        logger.info("case=%s stage=notify status=completed current_step=closed", case_id)
-
+        workflow_state.current_step = "diagnosis_required"
+        logger.info("case=%s stage=diagnose status=completed", case_id)
         return state
 
     async def _email_read_node(self, state: GraphState) -> GraphState:
         """Handle email read requests."""
         workflow_state = state["workflow_state"]
 
-        workflow_state.record_history("email_read", "started", "Fetching messages from Gmail")
-        email_result = await self.gmail_flow.get_messages(query="is:unread", max_results=10)
+        workflow_state.record_history("email_read", "started", "Fetching messages from Zoho Mail")
+        email_result = await self.mail_flow.get_messages(query="is:unread", max_results=10)
         messages_summary = f"Retrieved {email_result.get('count', 0)} unread messages"
         workflow_state.record_history("email_read", "completed", messages_summary)
         workflow_state.current_step = "email_retrieved"
@@ -490,26 +645,21 @@ class HelpdeskWorkflow:
 
     async def run(self, initial_state: dict[str, Any]) -> WorkflowState:
         """Run the workflow with the given initial state."""
-        # Check if we're resuming an existing case
-        resume_state = initial_state.get("resume_state")
-        if resume_state:
-            workflow_state = resume_state
-        else:
-            # Create new workflow state
-            workflow_state = WorkflowState(
-                case_id=initial_state.get("case_id", "case-unknown"),
-                summary=initial_state.get("summary", "No summary provided"),
-                service="unknown",
-                metadata=initial_state.get("metadata", {}),
-            )
-            workflow_state.add_message("user", initial_state.get("summary", ""))
+        # Create new workflow state (Jira is the source of truth; nothing is resumed
+        # from local state — existing tickets are re-fetched by ID from the subject).
+        workflow_state = WorkflowState(
+            case_id=initial_state.get("case_id", "case-unknown"),
+            summary=initial_state.get("summary", "No summary provided"),
+            service="unknown",
+            metadata=initial_state.get("metadata", {}),
+        )
+        workflow_state.add_message("user", initial_state.get("summary", ""))
 
         case_id = workflow_state.case_id
         logger.info(
-            "case=%s run=started source=%s resumed=%s",
+            "case=%s run=started source=%s",
             case_id,
             initial_state.get("source", "unknown"),
-            bool(resume_state),
         )
 
         # Check if this is an email read request (bypasses triage)
@@ -523,17 +673,21 @@ class HelpdeskWorkflow:
                 "initial_input": initial_state,
                 "triage_result": None,
                 "faq_results": None,
+                "ticket_id": None,
+                "existing_ticket": None,
             }
 
             email_result = await self._email_read_node(email_read_state)
             return email_result["workflow_state"]
 
-        # Normal flow: start with triage
+        # Normal flow: detect/load ticket, then triage
         graph_state: GraphState = {
             "workflow_state": workflow_state,
             "initial_input": initial_state,
             "triage_result": None,
             "faq_results": None,
+            "ticket_id": None,
+            "existing_ticket": None,
         }
 
         # Run the graph
@@ -541,11 +695,11 @@ class HelpdeskWorkflow:
         final_state = graph_result["workflow_state"]
         logger.info(
             "case=%s run=finished current_step=%s ticket=%s",
-            case_id,
+            final_state.case_id,
             final_state.current_step,
             (final_state.ticket or {}).get("ticket_id", "none"),
         )
         return final_state
 
     def create_langgraph_plan(self) -> list[str]:
-        return ["triage", "investigate", "remediate", "verify", "close"]
+        return ["load_ticket", "create_ticket", "acknowledge", "triage", "update_ticket", "clarify", "faq_gate", "resolve_faq", "diagnose"]

@@ -11,14 +11,6 @@ def _build_server() -> FastMCP:
     """Create a mock MCP server that mirrors the old JSON-RPC mock's behavior."""
     mcp = FastMCP("helpdesk-mock-mcp")
 
-    @mcp.tool(name="slack.post_approval")
-    def slack_post_approval(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        return {
-            "status": "queued",
-            "action_id": f"action-{uuid.uuid4().hex[:8]}",
-            "content": {"tool": "slack.post_approval", "arguments": arguments or {}},
-        }
-
     @mcp.tool(name="faq.search")
     def faq_search(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
@@ -55,29 +47,29 @@ def _build_server() -> FastMCP:
             "content": {"observed": True},
         }
 
-    @mcp.tool(name="slack.approval_request")
-    def slack_approval_request(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    @mcp.tool(name="zohomail.send_email")
+    def zohomail_send_email(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
-            "content": {"tool": "slack.approval_request", "arguments": arguments or {}},
+            "content": {"tool": "zohomail.send_email", "arguments": arguments or {}, "message_id": f"msg-{uuid.uuid4().hex[:8]}"},
         }
 
-    @mcp.tool(name="gmail.send_email")
-    def gmail_send_email(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    @mcp.tool(name="zohomail.reply_email")
+    def zohomail_reply_email(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
-            "content": {"tool": "gmail.send_email", "arguments": arguments or {}, "message_id": f"msg-{uuid.uuid4().hex[:8]}"},
+            "content": {"tool": "zohomail.reply_email", "arguments": arguments or {}, "message_id": f"reply-{uuid.uuid4().hex[:8]}"},
         }
 
-    @mcp.tool(name="gmail.get_messages")
-    def gmail_get_messages(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    @mcp.tool(name="zohomail.get_messages")
+    def zohomail_get_messages(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
             "content": {
-                "tool": "gmail.get_messages",
+                "tool": "zohomail.get_messages",
                 "arguments": arguments or {},
                 "messages": [],
                 "count": 0,
@@ -90,6 +82,40 @@ def _build_server() -> FastMCP:
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
             "content": {"tool": "jira.create_issue", "arguments": arguments or {}},
+        }
+
+    @mcp.tool(name="jira.get_issue")
+    def jira_get_issue(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        args = arguments or {}
+        issue_key = args.get("issue_key", "HELP-1")
+        return {
+            "status": "completed",
+            "action_id": f"action-{uuid.uuid4().hex[:8]}",
+            "content": {
+                "tool": "jira.get_issue",
+                "arguments": args,
+                "key": issue_key,
+                "summary": f"Mock summary for {issue_key}",
+                "description": "Mock description",
+                "priority": "medium",
+                "comments": [],
+            },
+        }
+
+    @mcp.tool(name="jira.add_comment")
+    def jira_add_comment(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {
+            "status": "completed",
+            "action_id": f"action-{uuid.uuid4().hex[:8]}",
+            "content": {"tool": "jira.add_comment", "arguments": arguments or {}},
+        }
+
+    @mcp.tool(name="jira.update_issue")
+    def jira_update_issue(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {
+            "status": "completed",
+            "action_id": f"action-{uuid.uuid4().hex[:8]}",
+            "content": {"tool": "jira.update_issue", "arguments": arguments or {}},
         }
 
     @mcp.tool()

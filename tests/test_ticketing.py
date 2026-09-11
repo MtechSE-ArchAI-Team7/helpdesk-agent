@@ -43,3 +43,58 @@ async def test_create_ticket_mock_mode() -> None:
     )
     assert result["status"] == "mocked"
     assert result["ticket_id"] == "JIRA-case-011"
+
+
+@pytest.mark.asyncio
+async def test_get_ticket(mock_server) -> None:
+    adapter = MCPProxyAdapter()
+    flow = JiraTicketFlow(adapter)
+    result = await flow.get_ticket("HELP-123")
+    assert result["status"] == "success"
+    assert result["ticket_id"] == "HELP-123"
+    assert "summary" in result
+    assert "comments" in result
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_mock_mode() -> None:
+    flow = JiraTicketFlow()
+    result = await flow.get_ticket("HELP-123")
+    assert result["status"] == "mocked"
+    assert result["ticket_id"] == "HELP-123"
+    assert result["comments"] == []
+
+
+@pytest.mark.asyncio
+async def test_add_comment(mock_server) -> None:
+    adapter = MCPProxyAdapter()
+    flow = JiraTicketFlow(adapter)
+    result = await flow.add_comment("HELP-123", "Diagnosis required")
+    assert result["status"] == "commented"
+    assert result["ticket_id"] == "HELP-123"
+
+
+@pytest.mark.asyncio
+async def test_add_comment_mock_mode() -> None:
+    flow = JiraTicketFlow()
+    result = await flow.add_comment("HELP-123", "Diagnosis required")
+    assert result["status"] == "mocked"
+    assert result["comment"] == "Diagnosis required"
+
+
+@pytest.mark.asyncio
+async def test_update_ticket(mock_server) -> None:
+    adapter = MCPProxyAdapter()
+    flow = JiraTicketFlow(adapter)
+    result = await flow.update_ticket("HELP-123", summary="New summary", priority="high")
+    assert result["status"] == "updated"
+    assert result["ticket_id"] == "HELP-123"
+    assert set(result["updated"]) == {"summary", "priority"}
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_mock_mode() -> None:
+    flow = JiraTicketFlow()
+    result = await flow.update_ticket("HELP-123", summary="New summary", description="New desc")
+    assert result["status"] == "mocked"
+    assert result["updated"] == {"summary": "New summary", "description": "New desc"}

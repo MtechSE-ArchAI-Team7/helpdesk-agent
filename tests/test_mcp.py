@@ -25,7 +25,7 @@ async def test_call_tool(mock_server) -> None:
 @pytest.mark.asyncio
 async def test_async_tool_uses_pending_status(mock_server) -> None:
     adapter = MCPProxyAdapter()
-    response = await adapter.call_tool("slack.approval_request", {"channel": "#ops"}, wait_for_completion=False)
+    response = await adapter.call_tool("zohomail.send_email", {"to": "a@b.c", "subject": "s", "body": "b"}, wait_for_completion=False)
     assert response.status == "queued"
     assert response.action_id
 

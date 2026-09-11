@@ -135,7 +135,7 @@ async def handle_chat_message(
             agent_response = "I need more details about your request. Could you describe the issue in more detail?"
         if missing_info:
             agent_response += f"\n\nMissing information: {', '.join(missing_info)}"
-    elif state.current_step == "resolved_faq":
+    elif state.current_step == "faq_answer_provided":
         faq_matches = state.faq_matches or []
         if faq_matches:
             top = faq_matches[0]
@@ -148,10 +148,8 @@ async def handle_chat_message(
         agent_response = f"Case {state.case_id}. Current step: {state.current_step}. "
         if state.ticket:
             agent_response += f"Ticket: {state.ticket.get('ticket_id', 'N/A')}. "
-        if state.current_step == "approval":
-            agent_response += "Awaiting approval."
-        elif state.current_step == "closed":
-            agent_response += "Your case has been processed and closed."
+        if state.current_step == "diagnosis_required":
+            agent_response += "Your ticket has been escalated for diagnosis by the support team."
 
     conv.add_agent_message(agent_response, {"case_id": state.case_id, "state": state.to_dict()})
 

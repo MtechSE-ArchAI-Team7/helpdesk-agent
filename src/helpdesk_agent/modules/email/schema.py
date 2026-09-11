@@ -147,7 +147,6 @@ class WebhookResponse(BaseModel):
     current_step: str
     messages: list[dict[str, Any]]
     evidence: list[dict[str, Any]]
-    approvals: list[dict[str, Any]]
     ticket: dict[str, Any] | None
     metadata: dict[str, Any]
     history: list[dict[str, Any]]

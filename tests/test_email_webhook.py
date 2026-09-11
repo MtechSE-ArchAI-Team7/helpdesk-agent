@@ -48,7 +48,8 @@ def test_email_webhook_creates_case_and_ticket() -> None:
     payload = response.json()
     assert payload["ticket"]["status"] == "mocked"
     assert payload["ticket"]["ticket_id"] == "JIRA-<12345@example.com>"
-    assert payload["current_step"] == "closed"
+    # No FAQ match in mocked mode -> ticket marked diagnosis required
+    assert payload["current_step"] == "diagnosis_required"
 
     mock_patcher.stop()
 
@@ -95,8 +96,8 @@ def test_email_webhook_accepts_tool_field_names() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["ticket"]["status"] == "mocked"
-    # message_url should be used as message_id for case_id
-    assert payload["case_id"] == "https://mail.google.com/mail/u/0/#inbox/abc123"
+    # New ticket created; case_id now carries the ticket ID
+    assert payload["case_id"] == "JIRA-https://mail.google.com/mail/u/0/#inbox/abc123"
 
     mock_patcher.stop()
 
@@ -164,8 +165,8 @@ def test_email_webhook_accepts_zoho_payload() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["ticket"]["status"] == "mocked"
-    # messageId (int) should be coerced to str and used as case_id
-    assert payload["case_id"] == "1560840837125110000"
+    # messageId (int) coerced to str; new ticket created, case_id carries ticket ID
+    assert payload["case_id"] == "JIRA-1560840837125110000"
     # subject and summary-based body should reach triage
     subject, body = mock_llm.triage_email.call_args.args
     assert subject == "Marketing - Product pitch"

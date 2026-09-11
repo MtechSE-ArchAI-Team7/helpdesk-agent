@@ -3,7 +3,6 @@ from __future__ import annotations
 from functools import lru_cache
 
 from .config import A2AConfig, LLMConfig, MCPConfig
-from .core.cases import CaseStore
 from .core.workflow import HelpdeskWorkflow
 from .mcp import MCPProxyAdapter
 from .modules.a2a.client import A2AClientManager
@@ -48,12 +47,6 @@ def get_workflow() -> HelpdeskWorkflow:
 def get_conversation_store() -> ConversationStore:
     """Get conversation store singleton."""
     return ConversationStore()
-
-
-@lru_cache
-def get_case_store() -> CaseStore:
-    """Get case store singleton."""
-    return CaseStore()
 
 
 @lru_cache
