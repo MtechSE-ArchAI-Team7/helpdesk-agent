@@ -18,6 +18,12 @@ class MCPConfig:
     # Optional URL of the real mcp-atlassian server. When set, jira.* and
     # confluence.* tools are routed there; everything else uses base_url.
     atlassian_url: str | None = None
+    # Optional URL of the Zoho Mail MCP server. When set, zohomail.* tools are
+    # routed there instead of base_url.
+    zohomail_url: str | None = None
+    # Optional URL of the FAQ MCP server. When set, faq.* tools are routed
+    # there instead of base_url.
+    faq_url: str | None = None
     # Prefix prepended to mcp-atlassian tool names (e.g. "atlassian_" when the
     # server is mounted behind a gateway that namespaces its tools).
     atlassian_tool_prefix: str = ""
@@ -38,6 +44,8 @@ class MCPConfig:
             auth_token=auth_token,
             headers=headers,
             atlassian_url=os.getenv("HELPDESK_AGENT_MCP_ATLASSIAN_URL") or None,
+            zohomail_url=os.getenv("HELPDESK_AGENT_MCP_ZOHOMAIL_URL") or None,
+            faq_url=os.getenv("HELPDESK_AGENT_MCP_FAQ_URL") or None,
             atlassian_tool_prefix=os.getenv("HELPDESK_AGENT_MCP_TOOL_PREFIX", ""),
             jira_project_key=os.getenv("HELPDESK_AGENT_JIRA_PROJECT_KEY", "HELP"),
         )

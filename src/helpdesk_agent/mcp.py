@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -9,6 +10,15 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from .config import MCPConfig
+
+logger = logging.getLogger(__name__)
+
+
+def _unwrap_error(exc: BaseException) -> str:
+    """Unwrap ExceptionGroup (e.g. anyio TaskGroup failures) to the root cause."""
+    while hasattr(exc, "exceptions") and getattr(exc, "exceptions"):
+        exc = exc.exceptions[0]
+    return f"{type(exc).__name__}: {exc}"
 
 
 @dataclass
@@ -50,14 +60,29 @@ class MCPProxyAdapter:
     Routes tools to the appropriate server:
     - jira.* / confluence.* -> the real mcp-atlassian server (atlassian_url),
       with tool names and arguments translated to its schema.
-    - everything else -> the legacy/mock server (base_url).
+    - zohomail.* -> the Zoho Mail MCP server (zohomail_url).
+    - faq.* -> the FAQ MCP server (faq_url).
+    - everything else -> the default server (base_url).
+    Servers without a dedicated URL fall back to base_url.
     """
 
     # Tools that belong to the real mcp-atlassian server.
     _ATLASSIAN_PREFIXES = ("jira.", "confluence.")
+    _ZOHOMAIL_PREFIX = "zohomail."
+    _FAQ_PREFIX = "faq."
 
     def __init__(self, config: MCPConfig | None = None) -> None:
         self.config = config or MCPConfig()
+
+    def _resolve_url(self, tool_name: str) -> str:
+        """Pick the MCP server URL for a tool based on its prefix."""
+        if self.config.atlassian_url is not None and tool_name.startswith(self._ATLASSIAN_PREFIXES):
+            return self.config.atlassian_url
+        if self.config.zohomail_url is not None and tool_name.startswith(self._ZOHOMAIL_PREFIX):
+            return self.config.zohomail_url
+        if self.config.faq_url is not None and tool_name.startswith(self._FAQ_PREFIX):
+            return self.config.faq_url
+        return self.config.base_url
 
     def _is_atlassian_tool(self, tool_name: str) -> bool:
         return self.config.atlassian_url is not None and tool_name.startswith(self._ATLASSIAN_PREFIXES)
@@ -115,7 +140,7 @@ class MCPProxyAdapter:
             url = self.config.atlassian_url or self.config.base_url
             tool_name, tool_arguments = self._translate_atlassian_call(tool_name, base_arguments)
         else:
-            url = self.config.base_url
+            url = self._resolve_url(tool_name)
             # Preserve the legacy extra params the mock/proxy servers expect by
             # nesting them under "arguments".
             base_arguments.setdefault("correlation_id", correlation_id or str(uuid4()))
@@ -136,12 +161,15 @@ class MCPProxyAdapter:
                     await session.initialize()
                     result = await session.call_tool(tool_name, tool_arguments)
         except Exception as exc:
-            return MCPResponse(action_id=None, status="failed", content={}, error=str(exc))
+            error = _unwrap_error(exc)
+            logger.error("mcp tool=%s url=%s call failed: %s", tool_name, url, error)
+            return MCPResponse(action_id=None, status="failed", content={}, error=error)
 
         if result.isError:
             error_text = "; ".join(
                 getattr(block, "text", str(block)) for block in result.content
             )
+            logger.error("mcp tool=%s url=%s returned error: %s", tool_name, url, error_text)
             return MCPResponse(action_id=None, status="failed", content={}, error=error_text)
 
         content = _content_to_dict(result.content)

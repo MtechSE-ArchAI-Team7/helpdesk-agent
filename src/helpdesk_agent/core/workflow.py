@@ -85,7 +85,14 @@ class HelpdeskWorkflow:
                 "new": "create_ticket",
             },
         )
-        graph.add_edge("create_ticket", "acknowledge")
+        graph.add_conditional_edges(
+            "create_ticket",
+            self._ticket_created,
+            {
+                "created": "acknowledge",
+                "failed": END,
+            },
+        )
         graph.add_edge("acknowledge", "triage")
         graph.add_edge("triage", "update_ticket")
         graph.add_edge("update_ticket", "check_clarification")
@@ -167,6 +174,11 @@ class HelpdeskWorkflow:
         """Route based on whether an existing ticket was loaded."""
         return "existing" if state.get("existing_ticket") else "new"
 
+    def _ticket_created(self, state: GraphState) -> str:
+        """Stop the run if ticket creation failed — without a real ticket ID,
+        every downstream Jira call and the acknowledgment subject are corrupt."""
+        return "created" if state.get("ticket_id") else "failed"
+
     async def _create_ticket_node(self, state: GraphState) -> GraphState:
         """Create a new Jira ticket for a new issue."""
         workflow_state = state["workflow_state"]
@@ -189,14 +201,21 @@ class HelpdeskWorkflow:
             f"Ticket creation: {ticket_result.get('ticket_id', ticket_result.get('error', 'unknown'))}",
         )
         ticket_id = ticket_result.get("ticket_id")
-        if ticket_id:
-            state["ticket_id"] = ticket_id
-            workflow_state.case_id = ticket_id
+        if ticket_result.get("status") == "failed" or not ticket_id:
+            logger.error(
+                "case=%s stage=create_ticket status=failed error=%s",
+                workflow_state.case_id,
+                ticket_result.get("error", "no ticket id in response"),
+            )
+            workflow_state.current_step = "ticket_creation_failed"
+            return state
+        state["ticket_id"] = ticket_id
+        workflow_state.case_id = ticket_id
         logger.info(
             "case=%s stage=create_ticket status=%s ticket_id=%s",
             workflow_state.case_id,
             ticket_result.get("status", "failed"),
-            ticket_id or ticket_result.get("error", "unknown"),
+            ticket_id,
         )
         return state
 

@@ -221,6 +221,31 @@ async def test_clarification_round_cap_escalates_to_diagnosis(mock_llm_client) -
 
 
 @pytest.mark.asyncio
+async def test_ticket_creation_failure_stops_run(mock_llm_client) -> None:
+    """If Jira ticket creation fails, stop before ack/triage — no phantom ID."""
+    workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
+    workflow.ticket_flow.create_ticket = AsyncMock(
+        return_value={"status": "failed", "error": "connection refused"}
+    )
+    workflow.mail_flow.reply_email = AsyncMock(return_value={"status": "sent"})
+
+    state = await workflow.run(
+        {
+            "case_id": "case-fail",
+            "summary": "VPN is down",
+            "source": "email",
+            "sender": "ops@example.com",
+            "metadata": {"message_id": "<msg-x@example.com>"},
+        }
+    )
+
+    assert state.current_step == "ticket_creation_failed"
+    # No acknowledgment email, no triage
+    workflow.mail_flow.reply_email.assert_not_awaited()
+    mock_llm_client.triage_email.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_email_read_bypass(mock_llm_client) -> None:
     workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
     state = await workflow.run({"case_id": "case-010", "summary": "read my emails"})

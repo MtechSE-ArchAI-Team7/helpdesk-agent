@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ...config import MCPConfig
 from ...mcp import MCPProxyAdapter, MCPResponse
 
 
@@ -54,15 +55,28 @@ class JiraTicketFlow:
         if response.status != "completed":
             return {"status": "failed", "action_id": response.action_id, "error": response.error}
 
-        # Real mcp-atlassian returns the created issue (key, e.g. "HELP-123");
-        # the mock returns legacy content.arguments.case_id.
+        # Real mcp-atlassian returns the created issue (key, e.g. "HELP-123"),
+        # possibly nested (issue.key) or embedded in a raw text blob; the legacy
+        # mock returns content.arguments.case_id. Never invent an ID here: if no
+        # key is extractable, the ticket may exist in Jira but we cannot address
+        # it, so report failure instead of corrupting every downstream call.
+        content = response.content
+        project_key = MCPConfig.from_env().jira_project_key
         ticket_id = (
-            response.content.get("key")
-            or response.content.get("issue_key")
-            or response.content.get("arguments", {}).get("case_id")
-            or f"JIRA-{case_id}"
+            content.get("key")
+            or content.get("issue_key")
+            or (content.get("issue") or {}).get("key")
+            or content.get("arguments", {}).get("case_id")
+            or extract_ticket_id(str(content.get("text", "")), project_key)
+            or extract_ticket_id(str(content), project_key)
         )
-        ticket_url = response.content.get("url") or response.content.get(
+        if not ticket_id:
+            return {
+                "status": "failed",
+                "action_id": response.action_id,
+                "error": "jira.create_issue succeeded but no issue key found in response",
+            }
+        ticket_url = content.get("url") or content.get(
             "browse_url", f"https://jira.example.com/browse/{ticket_id}"
         )
         ticket_info: dict[str, Any] = {

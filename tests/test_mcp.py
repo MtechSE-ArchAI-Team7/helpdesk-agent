@@ -1,5 +1,6 @@
 import pytest
 
+from helpdesk_agent.config import MCPConfig
 from helpdesk_agent.mcp import MCPProxyAdapter
 from helpdesk_agent.mock_mcp_server import MockMCPServer
 
@@ -32,3 +33,28 @@ async def test_async_tool_uses_pending_status(mock_server) -> None:
     polled = await adapter.get_action_status(response.action_id)
     assert polled.status == "completed"
     assert polled.content["observed"] is True
+
+
+def test_resolve_url_routes_by_tool_prefix() -> None:
+    config = MCPConfig(
+        base_url="http://default:1/mcp",
+        atlassian_url="http://jira:2/mcp",
+        zohomail_url="http://zoho:3/mcp",
+        faq_url="http://faq:4/mcp",
+    )
+    adapter = MCPProxyAdapter(config)
+    assert adapter._resolve_url("jira.create_issue") == "http://jira:2/mcp"
+    assert adapter._resolve_url("jira.add_comment") == "http://jira:2/mcp"
+    assert adapter._resolve_url("confluence.search") == "http://jira:2/mcp"
+    assert adapter._resolve_url("zohomail.reply_email") == "http://zoho:3/mcp"
+    assert adapter._resolve_url("faq.search") == "http://faq:4/mcp"
+    assert adapter._resolve_url("actions/get") == "http://default:1/mcp"
+
+
+def test_resolve_url_falls_back_to_base_url() -> None:
+    """Without dedicated URLs, all tools use base_url."""
+    adapter = MCPProxyAdapter(MCPConfig(base_url="http://default:1/mcp"))
+    assert adapter._resolve_url("zohomail.reply_email") == "http://default:1/mcp"
+    assert adapter._resolve_url("faq.search") == "http://default:1/mcp"
+    # jira.* only routes away when atlassian_url is configured
+    assert adapter._resolve_url("jira.create_issue") == "http://default:1/mcp"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Annotated, Any
 
@@ -21,6 +22,13 @@ from .modules.email.schema import EmailWebhook
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    # Ensure helpdesk_agent stage logs render even when uvicorn's own log
+    # config doesn't propagate them.
+    logging.basicConfig(
+        level=os.getenv("HELPDESK_AGENT_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     # Validate LLM configuration at startup (fail fast)
     llm_config = get_llm_config()
     if not llm_config.api_key:
