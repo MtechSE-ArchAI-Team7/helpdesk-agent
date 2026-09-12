@@ -137,6 +137,7 @@ class ZohoMailFlow:
         body: str,
         subject: str | None = None,
         to: str | None = None,
+        html_body: str | None = None,
     ) -> dict[str, Any]:
         """Reply to an email thread via Zoho Mail MCP (ZohoMail_sendReplyEmail).
 
@@ -160,7 +161,7 @@ class ZohoMailFlow:
         if not self._is_zoho_message_id(message_id):
             # Not Zoho's internal ID — cannot thread a reply; send fresh instead.
             if to and subject:
-                result = await self.send_email(to=to, subject=subject, body=body)
+                result = await self.send_email(to=to, subject=subject, body=body, html_body=html_body)
                 result["note"] = "sent as new email: inbound message_id is not a Zoho internal ID"
                 logger.info("zohomail reply fallback to sendEmail message_id=%s", message_id)
                 return result
@@ -175,6 +176,11 @@ class ZohoMailFlow:
             "fromAddress": self.config.zohomail_from_address,
             "content": body,
         }
+        if html_body:
+            # Plaintext bodies with "- " bullets render as one run-on paragraph
+            # in Zoho; send the HTML version when available.
+            reply_body["content"] = html_body
+            reply_body["mailFormat"] = "html"
         if to:
             reply_body["toAddress"] = to
         if subject is not None:

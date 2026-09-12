@@ -131,6 +131,45 @@ class HelpdeskWorkflow:
         body = parts[1] if len(parts) > 1 else summary_text
         return subject, body
 
+    def _ticketed_subject(self, ticket_id: str | None, subject: str) -> str:
+        """Prefix the subject with [TICKET-ID] unless it already contains a
+        ticket ID (e.g. a "Re: [AH-23] ..." reply), to avoid stacking prefixes
+        like "[AH-23] Re: [AH-23] Issue faced"."""
+        if not ticket_id:
+            return subject
+        if extract_ticket_id(subject, self.project_key):
+            return subject
+        return f"[{ticket_id}] {subject}"
+
+    @staticmethod
+    def _text_to_html(text: str) -> str:
+        """Convert plain-text email bodies to simple HTML: paragraphs for
+        blank-line-separated blocks and <ul><li> for "- "-prefixed lines, so
+        Zoho renders lists instead of one run-on paragraph."""
+        import html
+
+        blocks: list[str] = []
+        bullets: list[str] = []
+
+        def flush_bullets() -> None:
+            if bullets:
+                items = "".join(f"<li>{b}</li>" for b in bullets)
+                blocks.append(f"<ul>{items}</ul>")
+                bullets.clear()
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                flush_bullets()
+                continue
+            if line.startswith("- "):
+                bullets.append(html.escape(line[2:].strip()))
+                continue
+            flush_bullets()
+            blocks.append(f"<p>{html.escape(line)}</p>")
+        flush_bullets()
+        return "\n".join(blocks)
+
     async def _load_ticket_node(self, state: GraphState) -> GraphState:
         """Detect a ticket ID in the subject and load the existing Jira ticket."""
         workflow_state = state["workflow_state"]
@@ -228,7 +267,7 @@ class HelpdeskWorkflow:
 
         logger.info("case=%s stage=acknowledge status=started", workflow_state.case_id)
 
-        ack_subject = f"[{ticket_id}] {subject}" if ticket_id else subject
+        ack_subject = self._ticketed_subject(ticket_id, subject)
         ack_body = (
             "Thank you for contacting support.\n\n"
             f"Your request has been logged as ticket {ticket_id or 'N/A'}. "
@@ -240,7 +279,11 @@ class HelpdeskWorkflow:
         message_id = initial_input.get("metadata", {}).get("message_id")
         if message_id:
             email_result = await self.mail_flow.reply_email(
-                message_id, ack_body, subject=ack_subject, to=initial_input.get("sender")
+                message_id,
+                ack_body,
+                subject=ack_subject,
+                to=initial_input.get("sender"),
+                html_body=self._text_to_html(ack_body),
             )
             workflow_state.record_history(
                 "acknowledge",
@@ -423,13 +466,17 @@ class HelpdeskWorkflow:
         clarification_body = await self.llm_client.draft_clarification(triage_result, triage_result.raw_text)
 
         subject, _ = self._split_subject_body(initial_input)
-        reply_subject = f"[{ticket_id}] {subject}" if ticket_id else subject
+        reply_subject = self._ticketed_subject(ticket_id, subject)
 
         # Reply to the user with the clarifying questions
         message_id = initial_input.get("metadata", {}).get("message_id")
         if message_id:
             email_result = await self.mail_flow.reply_email(
-                message_id, clarification_body, subject=reply_subject, to=initial_input.get("sender")
+                message_id,
+                clarification_body,
+                subject=reply_subject,
+                to=initial_input.get("sender"),
+                html_body=self._text_to_html(clarification_body),
             )
             workflow_state.record_history(
                 "clarify",
@@ -568,13 +615,17 @@ class HelpdeskWorkflow:
         resolution_body = await self.llm_client.draft_resolution(top_result, workflow_state.summary)
 
         subject, _ = self._split_subject_body(initial_input)
-        reply_subject = f"[{ticket_id}] {subject}" if ticket_id else subject
+        reply_subject = self._ticketed_subject(ticket_id, subject)
 
         # Reply to the user with the FAQ answer
         message_id = initial_input.get("metadata", {}).get("message_id")
         if message_id:
             email_result = await self.mail_flow.reply_email(
-                message_id, resolution_body, subject=reply_subject, to=initial_input.get("sender")
+                message_id,
+                resolution_body,
+                subject=reply_subject,
+                to=initial_input.get("sender"),
+                html_body=self._text_to_html(resolution_body),
             )
             workflow_state.record_history(
                 "resolve_faq",

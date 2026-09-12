@@ -114,6 +114,29 @@ async def test_clarification_sends_reply_and_comments_ticket(mock_llm_client) ->
     assert any("pending clarifications" in body.lower() for body in comment_bodies)
 
 
+def test_ticketed_subject_does_not_stack_prefixes(mock_llm_client) -> None:
+    """A reply subject already carrying the ticket ID must not be re-prefixed
+    (regression: produced "[AH-23] Re: [AH-23] Issue faced")."""
+    workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
+    workflow.project_key = "AH"
+    assert workflow._ticketed_subject("AH-23", "Re: [AH-23] Issue faced") == "Re: [AH-23] Issue faced"
+    assert workflow._ticketed_subject("AH-23", "[AH-23] Issue faced") == "[AH-23] Issue faced"
+    assert workflow._ticketed_subject("AH-23", "Issue faced") == "[AH-23] Issue faced"
+    assert workflow._ticketed_subject(None, "Issue faced") == "Issue faced"
+
+
+def test_text_to_html_renders_bullets_as_list(mock_llm_client) -> None:
+    """Plaintext "- " bullets collapse into a run-on paragraph in Zoho; the
+    HTML version must use a real list."""
+    html = HelpdeskWorkflow._text_to_html(
+        "Thank you for contacting support. We need:\n- What browser are you using?\n- What time did it fail?\n\nBest regards,\nHelpdesk Team"
+    )
+    assert "<ul>" in html and "<li>What browser are you using?</li>" in html
+    assert "<li>What time did it fail?</li>" in html
+    assert "<p>Thank you for contacting support. We need:</p>" in html
+    assert "<p>Best regards,</p>" in html
+
+
 @pytest.mark.asyncio
 async def test_existing_ticket_uses_ticket_context_and_updates_fields(mock_llm_client) -> None:
     """Ticket ID in subject -> load ticket, triage with ticket context, update fields."""
