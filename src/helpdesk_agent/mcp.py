@@ -182,8 +182,10 @@ class MCPProxyAdapter:
 
         if result.isError:
             error_text = "; ".join(
-                getattr(block, "text", str(block)) for block in result.content
-            )
+                getattr(block, "text", None) or str(block) for block in result.content
+            ).strip()
+            if not error_text:
+                error_text = "tool returned isError with no message"
             logger.error("mcp tool=%s url=%s returned error: %s", tool_name, url, error_text)
             return MCPResponse(action_id=None, status="failed", content={}, error=error_text)
 
@@ -199,9 +201,17 @@ class MCPProxyAdapter:
         # an envelope — for those tools, the transport-level isError checked
         # above is authoritative.
         raw_status = "completed" if is_atlassian else data.get("status", "completed")
+        status_error: str | None = None
         if isinstance(raw_status, dict):
             code = raw_status.get("code")
             status = "completed" if code in (200, 201, 202) else "failed"
+            if status == "failed":
+                # Zoho-style envelope: surface the embedded message instead of None.
+                status_error = (
+                    raw_status.get("message")
+                    or raw_status.get("description")
+                    or f"server returned status {raw_status}"
+                )
         elif isinstance(raw_status, str) and raw_status.lower() in ("success", "ok", "succeeded", "completed"):
             status = "completed"
         else:
@@ -214,7 +224,7 @@ class MCPProxyAdapter:
             action_id=data.get("action_id"),
             status=status,
             content=data.get("content", data),
-            error=data.get("error"),
+            error=data.get("error") or status_error,
         )
 
     async def get_action_status(self, action_id: str) -> MCPResponse:

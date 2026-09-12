@@ -738,23 +738,28 @@ class HelpdeskWorkflow:
             initial_state.get("source", "unknown"),
         )
 
-        # Check if this is an email read request (bypasses triage)
-        summary_text = initial_state.get("summary", "").lower()
-        if any(keyword in summary_text for keyword in ["read", "get", "fetch", "retrieve", "show", "list"]) and any(
-            keyword in summary_text for keyword in ["email", "mail", "message"]
-        ):
-            logger.info("case=%s run=email_read bypassing triage", case_id)
-            email_read_state: GraphState = {
-                "workflow_state": workflow_state,
-                "initial_input": initial_state,
-                "triage_result": None,
-                "faq_results": None,
-                "ticket_id": None,
-                "existing_ticket": None,
-            }
+        # Check if this is an email read request (bypasses triage). Only chat /
+        # A2A users can issue this command; inbound emails (source="email") are
+        # always triaged, since an email body mentioning e.g. "get" and "mail"
+        # is a support request, not a mailbox-read command.
+        source = initial_state.get("source", "unknown")
+        if source in ("chat", "a2a"):
+            command_text = (initial_state.get("subject") or initial_state.get("summary", "")).lower()
+            if any(keyword in command_text for keyword in ["read", "get", "fetch", "retrieve", "show", "list"]) and any(
+                keyword in command_text for keyword in ["email", "mail", "message"]
+            ):
+                logger.info("case=%s run=email_read bypassing triage", case_id)
+                email_read_state: GraphState = {
+                    "workflow_state": workflow_state,
+                    "initial_input": initial_state,
+                    "triage_result": None,
+                    "faq_results": None,
+                    "ticket_id": None,
+                    "existing_ticket": None,
+                }
 
-            email_result = await self._email_read_node(email_read_state)
-            return email_result["workflow_state"]
+                email_result = await self._email_read_node(email_read_state)
+                return email_result["workflow_state"]
 
         # Normal flow: detect/load ticket, then triage
         graph_state: GraphState = {

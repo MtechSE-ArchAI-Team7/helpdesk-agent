@@ -270,6 +270,27 @@ async def test_ticket_creation_failure_stops_run(mock_llm_client) -> None:
 
 @pytest.mark.asyncio
 async def test_email_read_bypass(mock_llm_client) -> None:
+    """Chat users can ask the agent to read their mailbox."""
     workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
-    state = await workflow.run({"case_id": "case-010", "summary": "read my emails"})
+    state = await workflow.run({"case_id": "case-010", "summary": "read my emails", "source": "chat"})
     assert state.current_step == "email_retrieved"
+
+
+@pytest.mark.asyncio
+async def test_email_read_keywords_do_not_bypass_for_email_source(mock_llm_client) -> None:
+    """Regression: an inbound email whose body contains read/get/mail keywords
+    is a support request, not a mailbox-read command — it must go through the
+    normal ticket + triage flow."""
+    workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
+    state = await workflow.run(
+        {
+            "case_id": "case-011",
+            "summary": "Cannot get my mail\n\nI cannot get my mail to load, please help",
+            "subject": "Cannot get my mail",
+            "source": "email",
+            "sender": "user@example.com",
+        }
+    )
+    # Triaged as a normal issue: ticket created (mock mode), not email_retrieved
+    assert state.current_step != "email_retrieved"
+    mock_llm_client.triage_email.assert_awaited()
