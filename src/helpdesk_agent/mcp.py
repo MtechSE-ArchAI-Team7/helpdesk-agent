@@ -144,7 +144,8 @@ class MCPProxyAdapter:
     ) -> MCPResponse:
         base_arguments = dict(arguments or {})
 
-        if self._is_atlassian_tool(tool_name):
+        is_atlassian = self._is_atlassian_tool(tool_name)
+        if is_atlassian:
             url = self.config.atlassian_url or self.config.base_url
             tool_name, tool_arguments = self._translate_atlassian_call(tool_name, base_arguments)
         elif self._is_zohomail_tool(tool_name):
@@ -193,7 +194,11 @@ class MCPProxyAdapter:
         # Normalize status across server conventions: the legacy proxy returns
         # "completed", Zoho-style envelopes use {"status": {"code": 200, ...}}
         # and/or structuredContent with "status": "success".
-        raw_status = data.get("status", "completed")
+        # mcp-atlassian payloads put the resource's own fields at the top level
+        # (e.g. a Jira issue's workflow status {"name": "To Do"}), which is NOT
+        # an envelope — for those tools, the transport-level isError checked
+        # above is authoritative.
+        raw_status = "completed" if is_atlassian else data.get("status", "completed")
         if isinstance(raw_status, dict):
             code = raw_status.get("code")
             status = "completed" if code in (200, 201, 202) else "failed"

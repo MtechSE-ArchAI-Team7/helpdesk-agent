@@ -76,6 +76,75 @@ async def test_get_ticket_mock_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_ticket_atlassian_payload_with_workflow_status() -> None:
+    """Regression: mcp-atlassian's jira_get_issue returns the issue's own
+    workflow status ({"name": "To Do", ...}) at the payload's top level.
+    That field must not be mistaken for a Zoho-style status envelope, or the
+    lookup is misreported as failed and the workflow creates duplicate tickets.
+    """
+    import json
+    from unittest.mock import patch
+
+    from helpdesk_agent.config import MCPConfig
+
+    payload = {
+        "id": "10019",
+        "key": "AH-19",
+        "summary": "Login issue",
+        "description": "User cannot log in",
+        "status": {"name": "To Do", "category": "To Do", "color": "blue-gray"},
+        "priority": {"name": "Medium"},
+        "comments": [],
+    }
+
+    class _FakeText:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _FakeResult:
+        isError = False
+        structuredContent = None
+        content = [_FakeText(json.dumps(payload))]
+
+    class _FakeSession:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def initialize(self):
+            pass
+
+        async def call_tool(self, name, args):
+            assert name == "jira_get_issue"
+            assert args == {"issue_key": "AH-19"}
+            return _FakeResult()
+
+    class _FakeHTTP:
+        async def __aenter__(self):
+            return (None, None, None)
+
+        async def __aexit__(self, *args):
+            return False
+
+    adapter = MCPProxyAdapter(MCPConfig(atlassian_url="http://fake:8000/mcp", jira_project_key="AH"))
+    with (
+        patch("helpdesk_agent.mcp.streamablehttp_client", lambda *a, **k: _FakeHTTP()),
+        patch("helpdesk_agent.mcp.ClientSession", _FakeSession),
+    ):
+        flow = JiraTicketFlow(adapter)
+        result = await flow.get_ticket("AH-19")
+
+    assert result["status"] == "success"
+    assert result["ticket_id"] == "AH-19"
+    assert result["summary"] == "Login issue"
+
+
+@pytest.mark.asyncio
 async def test_add_comment(mock_server) -> None:
     adapter = MCPProxyAdapter()
     flow = JiraTicketFlow(adapter)
