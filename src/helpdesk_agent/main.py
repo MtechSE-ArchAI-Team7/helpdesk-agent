@@ -18,6 +18,7 @@ from .modules.chat.router import router as chat_router
 from .modules.email.router import email_webhook
 from .modules.email.router import router as email_router
 from .modules.email.schema import EmailWebhook
+from .observability import setup_observability
 
 
 def create_app() -> FastAPI:
@@ -78,6 +79,9 @@ def create_app() -> FastAPI:
         agent_card=build_agent_card(get_a2a_config()),
         http_handler=a2a_request_handler,
     ).add_routes_to_app(app, rpc_url=A2A_RPC_PATH)
+
+    # OpenTelemetry tracing
+    setup_observability(app)
 
     return app
 

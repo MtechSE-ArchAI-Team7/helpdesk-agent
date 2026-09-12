@@ -59,6 +59,21 @@ cp .env.example .env
 
 `.env` is git-ignored; `.env.example` documents all available settings.
 
+## Observability (OpenTelemetry)
+
+Distributed tracing is always on. By default spans are printed to stdout;
+set `OTEL_EXPORTER_OTLP_ENDPOINT` to export to an OTLP collector (Jaeger,
+Tempo, Azure Monitor, ...).
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_SERVICE_NAME=helpdesk-agent
+```
+
+Instrumented surfaces: inbound FastAPI requests (health probes excluded) and
+outbound httpx calls (OpenAI SDK, MCP adapters). Use
+`helpdesk_agent.observability.get_tracer()` for custom spans in workflow code.
+
 ### Required
 
 - `HELPDESK_AGENT_LLM_API_KEY` - OpenAI API key (required)
