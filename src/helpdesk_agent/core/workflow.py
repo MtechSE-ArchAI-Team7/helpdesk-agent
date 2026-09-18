@@ -8,6 +8,8 @@ from langgraph.graph import END, StateGraph
 from ..config import MCPConfig, TriageConfig
 from ..mcp import MCPProxyAdapter
 from ..models import WorkflowState
+from ..modules.a2a.client import A2AClientManager, DeliveryOutcome
+from ..modules.a2a.diagnosis import build_case_input
 from ..modules.email.service import ZohoMailFlow
 from ..modules.faq.service import FAQFlow
 from ..modules.ticketing.service import JiraTicketFlow, extract_ticket_id
@@ -21,6 +23,9 @@ MAX_CLARIFICATION_ROUNDS = 2
 
 #: Marker used in Jira comments so clarification rounds can be counted from the ticket.
 CLARIFICATION_COMMENT_MARKER = "pending clarifications"
+
+#: Name of the remote diagnosis agent in A2A remote-agent configuration.
+DIAGNOSIS_AGENT_NAME = "diagnosis-agent"
 
 
 class GraphState(TypedDict):
@@ -42,10 +47,12 @@ class HelpdeskWorkflow:
         mcp_adapter: MCPProxyAdapter | None = None,
         llm_client: LLMTriageClient | None = None,
         triage_config: TriageConfig | None = None,
+        a2a_client_manager: A2AClientManager | None = None,
     ) -> None:
         self.mcp_adapter = mcp_adapter
         self.llm_client = llm_client or LLMTriageClient()
         self.triage_config = triage_config or TriageConfig.from_env()
+        self.a2a_client_manager = a2a_client_manager
         self.project_key = MCPConfig.from_env().jira_project_key
         self.mail_flow = ZohoMailFlow(mcp_adapter)
         self.ticket_flow = JiraTicketFlow(mcp_adapter)
@@ -702,9 +709,67 @@ class HelpdeskWorkflow:
         else:
             workflow_state.record_history("diagnose", "skipped", "No ticket available for comment")
 
+        await self._trigger_diagnosis_agent(state)
+
         workflow_state.current_step = "diagnosis_required"
         logger.info("case=%s stage=diagnose status=completed", case_id)
         return state
+
+    async def _trigger_diagnosis_agent(self, state: GraphState) -> None:
+        """Fire-and-forget hand-off of the case to the diagnosis agent (Agent 2).
+
+        The diagnosis agent runs the investigation asynchronously and delivers
+        results (e.g. to the Jira ticket) itself; this workflow does not poll.
+        Any hand-off failure is logged and recorded but never fails the run.
+        """
+        workflow_state = state["workflow_state"]
+        case_id = workflow_state.case_id
+        manager = self.a2a_client_manager
+
+        if manager is None or not manager.has_target(DIAGNOSIS_AGENT_NAME):
+            workflow_state.record_history(
+                "diagnose", "skipped", f"Remote agent {DIAGNOSIS_AGENT_NAME!r} not configured"
+            )
+            return
+
+        case_payload = build_case_input(workflow_state, state.get("triage_result"), state.get("ticket_id"))
+        try:
+            outcome = await manager.send_case(DIAGNOSIS_AGENT_NAME, case_payload, context_id=case_id)
+        except Exception as exc:  # noqa: BLE001 - escalation must never sink the workflow
+            logger.exception("case=%s stage=diagnose handoff_error", case_id)
+            outcome = DeliveryOutcome(submitted=False, reason=f"unexpected error: {exc.__class__.__name__}")
+
+        workflow_state.metadata["diagnosis_trigger"] = {
+            "agent": DIAGNOSIS_AGENT_NAME,
+            "submitted": outcome.submitted,
+            "task_id": outcome.task_id,
+            "run_id": outcome.run_id,
+            "reason": outcome.reason,
+        }
+        workflow_state.record_history(
+            "diagnose",
+            "handoff_submitted" if outcome.submitted else "handoff_failed",
+            f"Diagnosis hand-off to {DIAGNOSIS_AGENT_NAME}: {'submitted' if outcome.submitted else outcome.reason}",
+        )
+        logger.info(
+            "case=%s stage=diagnose handoff_submitted=%s reason=%s",
+            case_id,
+            outcome.submitted,
+            outcome.reason,
+        )
+
+        ticket_id = state.get("ticket_id")
+        if not outcome.submitted and ticket_id:
+            comment_result = await self.ticket_flow.add_comment(
+                ticket_id,
+                "Diagnosis agent unreachable — automated investigation could not be started "
+                f"({outcome.reason}). Manual investigation required.",
+            )
+            workflow_state.record_history(
+                "diagnose",
+                comment_result.get("status", "failed"),
+                "Ticket comment added: diagnosis agent unreachable",
+            )
 
     async def _email_read_node(self, state: GraphState) -> GraphState:
         """Handle email read requests."""

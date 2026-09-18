@@ -40,7 +40,7 @@ def get_llm_client() -> LLMTriageClient:
 
 def get_workflow() -> HelpdeskWorkflow:
     """Get workflow instance with optional MCP adapter and LLM client."""
-    return HelpdeskWorkflow(get_mcp_adapter(), get_llm_client())
+    return HelpdeskWorkflow(get_mcp_adapter(), get_llm_client(), a2a_client_manager=get_a2a_client_manager())
 
 
 @lru_cache

@@ -119,30 +119,56 @@ class A2AConfig:
     timeout_seconds: float = 30.0
     # Remote A2A agents this agent may call, as a name -> base URL map.
     remote_agents: dict[str, str] = field(default_factory=dict)
+    # Bearer tokens for remote agents that require auth, as a name -> token map.
+    remote_agent_tokens: dict[str, str] = field(default_factory=dict)
+    # AgentCore Runtime ARNs for remote agents, as a name -> ARN map. An agent
+    # present here is invoked via SigV4-signed InvokeAgentRuntime instead of
+    # direct HTTP to its base URL.
+    remote_agent_runtime_arns: dict[str, str] = field(default_factory=dict)
+    # Region of the AgentCore runtimes in remote_agent_runtime_arns.
+    agentcore_region: str = "ap-southeast-1"
+
+    @staticmethod
+    def _parse_name_map(env_var: str, description: str, example: str) -> dict[str, str]:
+        raw = os.getenv(env_var, "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{env_var} must be a JSON object mapping agent names to {description}, e.g. {example}: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+        ):
+            raise ValueError(f"{env_var} must be a JSON object mapping agent names to {description}")
+        return dict(parsed)
 
     @classmethod
     def from_env(cls) -> "A2AConfig":
-        remote_raw = os.getenv("HELPDESK_AGENT_A2A_REMOTE_AGENTS", "").strip()
-        remote_agents: dict[str, str] = {}
-        if remote_raw:
-            try:
-                parsed = json.loads(remote_raw)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    "HELPDESK_AGENT_A2A_REMOTE_AGENTS must be a JSON object mapping agent names to base URLs, "
-                    f'e.g. {{"jira-bot": "http://localhost:9000"}}: {exc}'
-                ) from exc
-            if not isinstance(parsed, dict) or not all(
-                isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
-            ):
-                raise ValueError(
-                    "HELPDESK_AGENT_A2A_REMOTE_AGENTS must be a JSON object mapping agent names to base URLs"
-                )
-            remote_agents = dict(parsed)
+        remote_agents = cls._parse_name_map(
+            "HELPDESK_AGENT_A2A_REMOTE_AGENTS",
+            "base URLs",
+            '{"jira-bot": "http://localhost:9000"}',
+        )
+        remote_agent_tokens = cls._parse_name_map(
+            "HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKENS",
+            "bearer tokens",
+            '{"diagnosis-agent": "secret-token"}',
+        )
+        remote_agent_runtime_arns = cls._parse_name_map(
+            "HELPDESK_AGENT_A2A_REMOTE_AGENT_ARNS",
+            "AgentCore runtime ARNs",
+            '{"diagnosis-agent": "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/abc"}',
+        )
 
         return cls(
             base_url=os.getenv("HELPDESK_AGENT_A2A_BASE_URL", "http://localhost:8080"),
             agent_name=os.getenv("HELPDESK_AGENT_A2A_AGENT_NAME", "helpdesk-agent"),
             timeout_seconds=float(os.getenv("HELPDESK_AGENT_A2A_TIMEOUT_SECONDS", "30.0")),
             remote_agents=remote_agents,
+            remote_agent_tokens=remote_agent_tokens,
+            remote_agent_runtime_arns=remote_agent_runtime_arns,
+            agentcore_region=os.getenv("HELPDESK_AGENT_A2A_AGENTCORE_REGION", "ap-southeast-1"),
         )
