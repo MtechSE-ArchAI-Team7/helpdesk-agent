@@ -204,6 +204,82 @@ class TestA2AConfigTokensAndArns(unittest.TestCase):
             del os.environ["HELPDESK_AGENT_A2A_REMOTE_AGENT_ARNS"]
 
 
+class TestA2ASecretArnResolution(unittest.TestCase):
+    """HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKEN_SECRET_ARNS resolves via Secrets Manager."""
+
+    def _secret_arn(self) -> str:
+        # Built inline so ruff S105 doesn't read it as a hardcoded password.
+        return "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:aios/diagnosis-agent/agent-auth-token"
+
+    def _set_env(self, **env):
+        for key, value in env.items():
+            os.environ[key] = value
+        self.addCleanup(lambda: [os.environ.pop(k, None) for k in env])
+
+    def _fake_sm_client(self, secret_string):
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        client.get_secret_value.return_value = {"SecretString": secret_string}
+        return client
+
+    def test_pointer_resolves_plain_string_secret(self) -> None:
+        self._set_env(
+            HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKEN_SECRET_ARNS=f'{{"diagnosis-agent": "{self._secret_arn()}"}}'
+        )
+        from helpdesk_agent.config import A2AConfig
+
+        with patch("boto3.client", return_value=self._fake_sm_client("real-token-value")) as mock_boto:
+            config = A2AConfig.from_env()
+
+        mock_boto.assert_called_once_with("secretsmanager")
+        self.assertEqual(config.remote_agent_tokens, {"diagnosis-agent": "real-token-value"})
+
+    def test_pointer_resolves_single_key_json_secret(self) -> None:
+        self._set_env(
+            HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKEN_SECRET_ARNS=f'{{"diagnosis-agent": "{self._secret_arn()}"}}'
+        )
+        from helpdesk_agent.config import A2AConfig
+
+        with patch("boto3.client", return_value=self._fake_sm_client('{"token": "real-token-value"}')):
+            config = A2AConfig.from_env()
+
+        self.assertEqual(config.remote_agent_tokens, {"diagnosis-agent": "real-token-value"})
+
+    def test_literal_token_takes_precedence_over_pointer(self) -> None:
+        self._set_env(
+            HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKENS='{"diagnosis-agent": "literal-token"}',
+            HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKEN_SECRET_ARNS=f'{{"diagnosis-agent": "{self._secret_arn()}"}}',
+        )
+        from helpdesk_agent.config import A2AConfig
+
+        with patch("boto3.client") as mock_boto:
+            config = A2AConfig.from_env()
+
+        mock_boto.assert_not_called()
+        self.assertEqual(config.remote_agent_tokens, {"diagnosis-agent": "literal-token"})
+
+    def test_no_pointers_means_no_boto3(self) -> None:
+        from helpdesk_agent.config import A2AConfig
+
+        with patch("boto3.client") as mock_boto:
+            A2AConfig.from_env()
+
+        mock_boto.assert_not_called()
+
+    def test_multi_key_json_secret_rejected(self) -> None:
+        self._set_env(
+            HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKEN_SECRET_ARNS=f'{{"diagnosis-agent": "{self._secret_arn()}"}}'
+        )
+        from helpdesk_agent.config import A2AConfig
+
+        with (
+            patch("boto3.client", return_value=self._fake_sm_client('{"a": "1", "b": "2"}')),
+            self.assertRaises(ValueError),
+        ):
+            A2AConfig.from_env()
+
+
 def _case_payload():
     return {
         "case_id": "HELP-1",

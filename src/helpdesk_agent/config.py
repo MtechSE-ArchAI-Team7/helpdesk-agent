@@ -121,6 +121,11 @@ class A2AConfig:
     remote_agents: dict[str, str] = field(default_factory=dict)
     # Bearer tokens for remote agents that require auth, as a name -> token map.
     remote_agent_tokens: dict[str, str] = field(default_factory=dict)
+    # Secrets Manager pointers for remote-agent tokens, as a name -> secret
+    # ARN (or secret name) map. Resolved via GetSecretValue at startup under
+    # the default AWS credential chain; a literal token in remote_agent_tokens
+    # for the same agent wins, so local dev overrides are never replaced.
+    remote_agent_token_secret_arns: dict[str, str] = field(default_factory=dict)
     # AgentCore Runtime ARNs for remote agents, as a name -> ARN map. An agent
     # present here is invoked via SigV4-signed InvokeAgentRuntime instead of
     # direct HTTP to its base URL.
@@ -145,6 +150,36 @@ class A2AConfig:
             raise ValueError(f"{env_var} must be a JSON object mapping agent names to {description}")
         return dict(parsed)
 
+    @staticmethod
+    def _resolve_secret_tokens(secret_arns: dict[str, str]) -> dict[str, str]:
+        """Resolve Secrets Manager pointers to token values via GetSecretValue.
+
+        Accepts secret ARNs or plain secret names as SecretId. Secrets stored
+        as a JSON object resolve to their single value (multi-key secrets are
+        rejected — ambiguous). boto3 is imported lazily so local dev without
+        pointers never needs AWS credentials.
+        """
+        import boto3
+
+        client = boto3.client("secretsmanager")
+        resolved: dict[str, str] = {}
+        for agent_name, secret_id in secret_arns.items():
+            value = client.get_secret_value(SecretId=secret_id)["SecretString"]
+            value = value.strip()
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                resolved[agent_name] = value
+                continue
+            if isinstance(parsed, dict) and len(parsed) == 1:
+                resolved[agent_name] = str(next(iter(parsed.values())))
+            else:
+                raise ValueError(
+                    f"secret {secret_id!r} for agent {agent_name!r} is JSON with "
+                    f"{len(parsed)} keys; expected a plain string or a single-key object"
+                )
+        return resolved
+
     @classmethod
     def from_env(cls) -> "A2AConfig":
         remote_agents = cls._parse_name_map(
@@ -157,11 +192,22 @@ class A2AConfig:
             "bearer tokens",
             '{"diagnosis-agent": "secret-token"}',
         )
+        remote_agent_token_secret_arns = cls._parse_name_map(
+            "HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKEN_SECRET_ARNS",
+            "Secrets Manager secret ARNs",
+            '{"diagnosis-agent": "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:example"}',
+        )
         remote_agent_runtime_arns = cls._parse_name_map(
             "HELPDESK_AGENT_A2A_REMOTE_AGENT_ARNS",
             "AgentCore runtime ARNs",
             '{"diagnosis-agent": "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/abc"}',
         )
+
+        pending_secret_arns = {
+            name: arn for name, arn in remote_agent_token_secret_arns.items() if name not in remote_agent_tokens
+        }
+        if pending_secret_arns:
+            remote_agent_tokens.update(cls._resolve_secret_tokens(pending_secret_arns))
 
         return cls(
             base_url=os.getenv("HELPDESK_AGENT_A2A_BASE_URL", "http://localhost:8080"),
@@ -169,6 +215,7 @@ class A2AConfig:
             timeout_seconds=float(os.getenv("HELPDESK_AGENT_A2A_TIMEOUT_SECONDS", "30.0")),
             remote_agents=remote_agents,
             remote_agent_tokens=remote_agent_tokens,
+            remote_agent_token_secret_arns=remote_agent_token_secret_arns,
             remote_agent_runtime_arns=remote_agent_runtime_arns,
             agentcore_region=os.getenv("HELPDESK_AGENT_A2A_AGENTCORE_REGION", "ap-southeast-1"),
         )
