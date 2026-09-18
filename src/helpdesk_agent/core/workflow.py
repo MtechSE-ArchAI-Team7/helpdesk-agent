@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, TypedDict
 
@@ -733,6 +734,11 @@ class HelpdeskWorkflow:
             return
 
         case_payload = build_case_input(workflow_state, state.get("triage_result"), state.get("ticket_id"))
+        logger.info(
+            "case=%s stage=diagnose handoff_payload=%s",
+            case_id,
+            json.dumps(case_payload, default=str),
+        )
         try:
             outcome = await manager.send_case(DIAGNOSIS_AGENT_NAME, case_payload, context_id=case_id)
         except Exception as exc:  # noqa: BLE001 - escalation must never sink the workflow

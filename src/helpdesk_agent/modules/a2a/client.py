@@ -197,18 +197,50 @@ class A2AClientManager:
         long-running by design). boto3 is imported lazily so local dev does
         not require it.
         """
+        if not token:
+            # AgentCore forwards only the custom authorization header to the
+            # container; without it the runtime rejects the call with 401.
+            logger.warning(
+                "case hand-off to %s via AgentCore skipped: no bearer token configured "
+                "(set HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKENS)",
+                agent_name,
+            )
+            return DeliveryOutcome(
+                submitted=False,
+                reason="missing bearer token for AgentCore runtime",
+                task_id=task_id,
+            )
+
         run_id = str(uuid5(NAMESPACE_URL, f"{agent_name}:{envelope_digest(envelope)}"))
         payload = json.dumps(envelope).encode("utf-8")
 
-        def _invoke() -> None:
+        def _invoke() -> dict[str, Any] | None:
             import boto3
             from botocore.config import Config
 
             client = boto3.client(
                 "bedrock-agentcore",
                 region_name=self._config.agentcore_region,
-                config=Config(connect_timeout=10, read_timeout=self._config.timeout_seconds),
+                # total_max_attempts=1: InvokeAgentRuntime is not idempotent —
+                # a botocore retried read timeout starts a SECOND investigation
+                # on the remote side. Fire-and-forget must never duplicate.
+                config=Config(
+                    connect_timeout=10,
+                    read_timeout=self._config.timeout_seconds,
+                    retries={"total_max_attempts": 1},
+                ),
             )
+
+            # InvokeAgentRuntime models no header parameter, and the standard
+            # Authorization header is consumed by the SigV4 signature, so the
+            # bearer token and the A2A protocol version go on via a before-sign
+            # hook — the documented boto3 mechanism, and the only carrier the
+            # diagnosis agent's runtime forwards to the container.
+            def _add_a2a_headers(request: Any, **kwargs: Any) -> None:
+                request.headers.update(A2A_VERSION_HEADER)
+                request.headers["X-Amzn-Bedrock-AgentCore-Runtime-Custom-Authorization"] = f"Bearer {token}"
+
+            client.meta.events.register("before-sign.bedrock-agentcore.InvokeAgentRuntime", _add_a2a_headers)
             kwargs: dict[str, Any] = {
                 "agentRuntimeArn": runtime_arn,
                 "runtimeSessionId": run_id,
@@ -217,10 +249,17 @@ class A2AClientManager:
                 "accept": "application/json",
                 "payload": payload,
             }
-            client.invoke_agent_runtime(**kwargs)
+            response = client.invoke_agent_runtime(**kwargs)
+            body = response.get("response")
+            if body is None:
+                return None
+            try:
+                return json.loads(body.read())
+            except Exception:  # noqa: BLE001 - an unreadable body is not a hand-off failure
+                return None
 
         try:
-            await asyncio.to_thread(_invoke)
+            result = await asyncio.to_thread(_invoke)
         except Exception as exc:  # noqa: BLE001 - hand-off failure must not sink the workflow
             from botocore.exceptions import ReadTimeoutError
 
@@ -233,6 +272,11 @@ class A2AClientManager:
             return DeliveryOutcome(
                 submitted=False, reason=f"AgentCore error: {exc.__class__.__name__}", task_id=task_id, run_id=run_id
             )
+        if isinstance(result, dict) and "error" in result:
+            error = result["error"]
+            message = error.get("message", error) if isinstance(error, dict) else error
+            logger.warning("case hand-off to %s via AgentCore returned JSON-RPC error: %s", agent_name, message)
+            return DeliveryOutcome(submitted=False, reason=f"JSON-RPC error: {message}", task_id=task_id, run_id=run_id)
         logger.info("case handed to %s via AgentCore, run_id=%s", agent_name, run_id)
         return DeliveryOutcome(submitted=True, task_id=task_id, run_id=run_id)
 

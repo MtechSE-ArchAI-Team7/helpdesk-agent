@@ -92,6 +92,44 @@ outbound httpx calls (OpenAI SDK, MCP adapters). Use
 - `HELPDESK_AGENT_MCP_TIMEOUT_SECONDS` - Request timeout (default: `5.0`)
 - `HELPDESK_AGENT_MCP_AUTH_TOKEN` - Bearer token for MCP endpoint
 
+## Diagnosis agent hand-off (Agent 2)
+
+When triage cannot resolve a case (no FAQ match, clarifications exhausted), the
+`diagnose` workflow node hands the case to the diagnosis agent as an A2A 1.0
+`SendMessage` JSON-RPC request, **fire-and-forget**: the helpdesk agent does
+not poll for results — Agent 2 owns the investigation and posts its diagnosis
+back to the Jira ticket itself.
+
+Transport is selected by configuration:
+
+- **Deployed (AgentCore)**: set `HELPDESK_AGENT_A2A_REMOTE_AGENT_ARNS` to a
+  name → runtime ARN map. The envelope is submitted via SigV4-signed
+  `bedrock-agentcore:InvokeAgentRuntime`. The bearer token rides on the
+  `X-Amzn-Bedrock-AgentCore-Runtime-Custom-Authorization` header (AgentCore
+  consumes `Authorization` for the signature), `A2A-Version: 1.0` is sent on
+  every call, and botocore retries are disabled because the invocation is not
+  idempotent (a retried call starts a second investigation). The execution
+  role needs `bedrock-agentcore:InvokeAgentRuntime` scoped to the diagnosis
+  runtime ARN.
+- **Local/dev (HTTP)**: set `HELPDESK_AGENT_A2A_REMOTE_AGENTS` to a name →
+  base URL map; the envelope is POSTed to `{base_url}/` with a bearer token
+  on `Authorization`.
+
+Current deployment:
+
+| Setting | Value |
+| --- | --- |
+| Runtime ARN | `arn:aws:bedrock-agentcore:ap-southeast-1:734849394833:runtime/diagnosis_agent-GpDELMCxll` |
+| Region | `ap-southeast-1` |
+| Token | Secrets Manager `aios/diagnosis-agent/agent-auth-token` (account `734849394833`) — inject as `HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKENS`; never commit |
+
+Case payloads are built by `src/helpdesk_agent/modules/a2a/diagnosis.py`
+(`build_case_input`) and carry the full `CaseInput` contract (`requester`,
+`classification`, `affected_services`, `time_window`); the current OTEL trace
+id rides along as `trace_id` for cross-agent tracing. Note: do NOT use agent
+card discovery for Agent 2 — its deployed card advertises a localhost URL;
+call the ARN directly.
+
 ## MCP Tools
 
 The agent uses these MCP tools:

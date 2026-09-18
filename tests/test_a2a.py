@@ -216,16 +216,46 @@ def _case_payload():
     }
 
 
+def _fake_boto_client(captured, response=None):
+    """Build a boto3 bedrock-agentcore client stand-in.
+
+    Provides the ``meta.events.register`` surface that ``_send_via_agentcore``
+    uses for its before-sign header hook, records invoke kwargs into
+    ``captured`` (plus a ``client`` back-reference), and returns ``response``
+    (default: an empty dict, i.e. no response body to parse).
+    """
+    from types import SimpleNamespace
+
+    class FakeEvents:
+        def __init__(self) -> None:
+            self.registered: list = []
+
+        def register(self, name, fn):
+            self.registered.append((name, fn))
+
+    class FakeBotoClient:
+        def __init__(self) -> None:
+            self.meta = SimpleNamespace(events=FakeEvents())
+
+        def invoke_agent_runtime(self, **kwargs):
+            captured.update(kwargs)
+            captured["client"] = self
+            return response if response is not None else {}
+
+    return FakeBotoClient()
+
+
 class TestSendCase(unittest.TestCase):
     def _manager(self, **overrides):
         from helpdesk_agent.config import A2AConfig
         from helpdesk_agent.modules.a2a.client import A2AClientManager
 
-        config = A2AConfig(
-            remote_agents={"diagnosis-agent": "http://localhost:9000"},
-            remote_agent_tokens={"diagnosis-agent": "tok-123"},
-            **overrides,
-        )
+        defaults = {
+            "remote_agents": {"diagnosis-agent": "http://localhost:9000"},
+            "remote_agent_tokens": {"diagnosis-agent": "tok-123"},
+        }
+        defaults.update(overrides)
+        config = A2AConfig(**defaults)
         return A2AClientManager(config)
 
     def test_unknown_agent_raises_key_error(self) -> None:
@@ -313,11 +343,7 @@ class TestSendCase(unittest.TestCase):
         )
         captured = {}
 
-        class FakeBotoClient:
-            def invoke_agent_runtime(self, **kwargs):
-                captured.update(kwargs)
-
-        with patch("boto3.client", return_value=FakeBotoClient()) as mock_boto:
+        with patch("boto3.client", return_value=_fake_boto_client(captured)) as mock_boto:
             outcome = asyncio.run(manager.send_case("diagnosis-agent", _case_payload(), context_id="HELP-1"))
 
         self.assertTrue(outcome.submitted)
@@ -342,14 +368,10 @@ class TestSendCase(unittest.TestCase):
             }
         )
 
-        class FakeBotoClient:
-            def invoke_agent_runtime(self, **kwargs):
-                pass
-
         # Same payload + same task id -> same session id. Patch uuid4 used for
         # the task id to pin the envelope content.
         with (
-            patch("boto3.client", return_value=FakeBotoClient()),
+            patch("boto3.client", return_value=_fake_boto_client({})),
             patch("helpdesk_agent.modules.a2a.diagnosis.uuid4", return_value=MagicMock(hex="fixed-task-id")),
             patch("helpdesk_agent.modules.a2a.client.uuid4", return_value=MagicMock(hex="fixed-task-id")),
         ):
@@ -365,6 +387,11 @@ class TestSendCase(unittest.TestCase):
         )
 
         class TimeoutBotoClient:
+            def __init__(self) -> None:
+                from types import SimpleNamespace
+
+                self.meta = SimpleNamespace(events=SimpleNamespace(register=lambda *a, **k: None))
+
             def invoke_agent_runtime(self, **kwargs):
                 from botocore.exceptions import ReadTimeoutError
 
@@ -375,6 +402,89 @@ class TestSendCase(unittest.TestCase):
 
         self.assertTrue(outcome.submitted)
         self.assertEqual(outcome.reason, "submitted; response not awaited")
+
+    def test_agentcore_registers_auth_and_version_headers(self) -> None:
+        from types import SimpleNamespace
+
+        manager = self._manager(
+            remote_agent_runtime_arns={
+                "diagnosis-agent": "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/abc"
+            }
+        )
+        captured = {}
+        fake_client = _fake_boto_client(captured)
+
+        with patch("boto3.client", return_value=fake_client):
+            outcome = asyncio.run(manager.send_case("diagnosis-agent", _case_payload()))
+
+        self.assertTrue(outcome.submitted)
+        registered = fake_client.meta.events.registered
+        self.assertEqual(len(registered), 1)
+        event_name, hook = registered[0]
+        self.assertEqual(event_name, "before-sign.bedrock-agentcore.InvokeAgentRuntime")
+
+        request = SimpleNamespace(headers={})
+        hook(request)
+        self.assertEqual(request.headers["A2A-Version"], "1.0")
+        self.assertEqual(
+            request.headers["X-Amzn-Bedrock-AgentCore-Runtime-Custom-Authorization"],
+            "Bearer tok-123",
+        )
+        # The standard Authorization header must stay unused: SigV4 owns it.
+        self.assertNotIn("Authorization", request.headers)
+
+    def test_agentcore_disables_botocore_retries(self) -> None:
+        manager = self._manager(
+            remote_agent_runtime_arns={
+                "diagnosis-agent": "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/abc"
+            }
+        )
+
+        with patch("boto3.client", return_value=_fake_boto_client({})) as mock_boto:
+            asyncio.run(manager.send_case("diagnosis-agent", _case_payload()))
+
+        config = mock_boto.call_args.kwargs["config"]
+        self.assertEqual(config.retries.get("total_max_attempts"), 1)
+
+    def test_agentcore_missing_token_fails_fast(self) -> None:
+        manager = self._manager(
+            remote_agent_runtime_arns={
+                "diagnosis-agent": "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/abc"
+            },
+            remote_agent_tokens={},
+        )
+
+        with patch("boto3.client") as mock_boto:
+            outcome = asyncio.run(manager.send_case("diagnosis-agent", _case_payload()))
+
+        self.assertFalse(outcome.submitted)
+        self.assertIn("token", outcome.reason)
+        mock_boto.assert_not_called()
+
+    def test_agentcore_jsonrpc_error_is_failure(self) -> None:
+        import io
+        import json as _json
+
+        manager = self._manager(
+            remote_agent_runtime_arns={
+                "diagnosis-agent": "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/abc"
+            }
+        )
+        body = _json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "x",
+                "error": {"code": -32009, "message": "A2A version '0.3' is not supported by this handler"},
+            }
+        ).encode("utf-8")
+        captured = {}
+
+        with patch("boto3.client", return_value=_fake_boto_client(captured, response={"response": io.BytesIO(body)})):
+            outcome = asyncio.run(manager.send_case("diagnosis-agent", _case_payload()))
+
+        self.assertFalse(outcome.submitted)
+        self.assertIn("JSON-RPC error", outcome.reason)
+        self.assertIn("not supported", outcome.reason)
 
 
 class TestDiagnoseHandoff(unittest.TestCase):
