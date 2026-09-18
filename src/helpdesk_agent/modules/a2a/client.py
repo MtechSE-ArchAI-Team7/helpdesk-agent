@@ -235,9 +235,12 @@ class A2AClientManager:
             # Authorization header is consumed by the SigV4 signature, so the
             # bearer token and the A2A protocol version go on via a before-sign
             # hook — the documented boto3 mechanism, and the only carrier the
-            # diagnosis agent's runtime forwards to the container.
+            # diagnosis agent's runtime forwards to the container. Note:
+            # botocore's HTTPHeaders supports item assignment but not
+            # dict-style .update().
             def _add_a2a_headers(request: Any, **kwargs: Any) -> None:
-                request.headers.update(A2A_VERSION_HEADER)
+                for name, value in A2A_VERSION_HEADER.items():
+                    request.headers[name] = value
                 request.headers["X-Amzn-Bedrock-AgentCore-Runtime-Custom-Authorization"] = f"Bearer {token}"
 
             client.meta.events.register("before-sign.bedrock-agentcore.InvokeAgentRuntime", _add_a2a_headers)

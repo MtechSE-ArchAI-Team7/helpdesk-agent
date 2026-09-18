@@ -404,8 +404,6 @@ class TestSendCase(unittest.TestCase):
         self.assertEqual(outcome.reason, "submitted; response not awaited")
 
     def test_agentcore_registers_auth_and_version_headers(self) -> None:
-        from types import SimpleNamespace
-
         manager = self._manager(
             remote_agent_runtime_arns={
                 "diagnosis-agent": "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/abc"
@@ -423,8 +421,13 @@ class TestSendCase(unittest.TestCase):
         event_name, hook = registered[0]
         self.assertEqual(event_name, "before-sign.bedrock-agentcore.InvokeAgentRuntime")
 
-        request = SimpleNamespace(headers={})
-        hook(request)
+        # Use a real botocore AWSRequest: its headers object (HTTPHeaders)
+        # intentionally lacks dict-style .update(), which a plain dict stand-in
+        # would not catch.
+        from botocore.awsrequest import AWSRequest
+
+        request = AWSRequest(method="POST", url="https://bedrock-agentcore.example.com/", data=b"{}")
+        hook(request=request)
         self.assertEqual(request.headers["A2A-Version"], "1.0")
         self.assertEqual(
             request.headers["X-Amzn-Bedrock-AgentCore-Runtime-Custom-Authorization"],
