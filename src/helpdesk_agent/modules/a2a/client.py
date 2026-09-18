@@ -26,6 +26,35 @@ SendMessageEvent = tuple[Task, TaskStatusUpdateEvent | TaskArtifactUpdateEvent |
 A2A_VERSION_HEADER = {"A2A-Version": "1.0"}
 
 
+def _try_parse_json(response: Any) -> dict[str, Any] | None:
+    """Best-effort parse of an httpx response body as a JSON-RPC dict."""
+    try:
+        parsed = response.json()
+    except Exception:  # noqa: BLE001 - an unreadable body is not a hand-off failure
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_task_id(body: dict[str, Any] | None) -> str | None:
+    """Pull the server-assigned task id out of a ``SendMessage`` response body.
+
+    Returns None when the body is missing, unparsed, or carries no task — a
+    hand-off without a readable response is still a successful submission.
+    """
+    if not isinstance(body, dict):
+        return None
+    result = body.get("result")
+    if not isinstance(result, dict):
+        return None
+    task = result.get("task")
+    if isinstance(task, dict) and isinstance(task.get("id"), str):
+        return task["id"]
+    # Some handlers return the Task object directly as the result.
+    if result.get("kind") == "task" and isinstance(result.get("id"), str):
+        return result["id"]
+    return None
+
+
 @dataclass(frozen=True)
 class DeliveryOutcome:
     """Result of a fire-and-forget case hand-off to a remote agent.
@@ -138,26 +167,25 @@ class A2AClientManager:
         with a runtime ARN is invoked via SigV4-signed ``InvokeAgentRuntime``
         (the deployed AgentCore path); otherwise the envelope is POSTed as
         JSON-RPC to ``{base_url}/`` with a bearer token (local/dev path).
+
+        The envelope carries no ``taskId``: on a new submission the remote
+        agent assigns the task id (an inbound ``taskId`` means "resume" and
+        an unknown one is rejected). When the response is read in time, the
+        server-assigned id is adopted into the returned ``DeliveryOutcome``.
         """
         base_url, token = self._resolve_target(agent_name)
-        task_id = uuid4().hex
-        envelope = build_send_message_envelope(
-            case_payload,
-            task_id=task_id,
-            context_id=context_id or uuid4().hex,
-        )
+        envelope = build_send_message_envelope(case_payload)
 
         runtime_arn = self._config.remote_agent_runtime_arns.get(agent_name)
         if runtime_arn:
-            return await self._send_via_agentcore(agent_name, runtime_arn, envelope, task_id, token)
-        return await self._send_via_http(agent_name, base_url, envelope, task_id, token)
+            return await self._send_via_agentcore(agent_name, runtime_arn, envelope, token)
+        return await self._send_via_http(agent_name, base_url, envelope, token)
 
     async def _send_via_http(
         self,
         agent_name: str,
         base_url: str,
         envelope: dict[str, Any],
-        task_id: str,
         token: str,
     ) -> DeliveryOutcome:
         """POST the JSON-RPC envelope directly to the remote agent's root path."""
@@ -169,14 +197,11 @@ class A2AClientManager:
             response = await http_client.post(f"{base_url.rstrip('/')}/", json=envelope, headers=headers)
         except httpx.HTTPError as exc:
             logger.warning("case hand-off to %s failed: %s", agent_name, exc)
-            return DeliveryOutcome(
-                submitted=False, reason=f"transport error: {exc.__class__.__name__}", task_id=task_id
-            )
+            return DeliveryOutcome(submitted=False, reason=f"transport error: {exc.__class__.__name__}")
         if response.status_code >= 400:
             logger.warning("case hand-off to %s rejected: status=%s", agent_name, response.status_code)
-            return DeliveryOutcome(
-                submitted=False, reason=f"remote returned HTTP {response.status_code}", task_id=task_id
-            )
+            return DeliveryOutcome(submitted=False, reason=f"remote returned HTTP {response.status_code}")
+        task_id = _extract_task_id(_try_parse_json(response))
         logger.info("case handed to %s via HTTP, task_id=%s", agent_name, task_id)
         return DeliveryOutcome(submitted=True, task_id=task_id)
 
@@ -185,7 +210,6 @@ class A2AClientManager:
         agent_name: str,
         runtime_arn: str,
         envelope: dict[str, Any],
-        task_id: str,
         token: str,
     ) -> DeliveryOutcome:
         """Invoke the remote agent's AgentCore Runtime with the envelope as payload.
@@ -205,11 +229,7 @@ class A2AClientManager:
                 "(set HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKENS)",
                 agent_name,
             )
-            return DeliveryOutcome(
-                submitted=False,
-                reason="missing bearer token for AgentCore runtime",
-                task_id=task_id,
-            )
+            return DeliveryOutcome(submitted=False, reason="missing bearer token for AgentCore runtime")
 
         run_id = str(uuid5(NAMESPACE_URL, f"{agent_name}:{envelope_digest(envelope)}"))
         payload = json.dumps(envelope).encode("utf-8")
@@ -268,19 +288,16 @@ class A2AClientManager:
 
             if isinstance(exc, ReadTimeoutError):
                 logger.info("case handed to %s via AgentCore; response not awaited, run_id=%s", agent_name, run_id)
-                return DeliveryOutcome(
-                    submitted=True, reason="submitted; response not awaited", task_id=task_id, run_id=run_id
-                )
+                return DeliveryOutcome(submitted=True, reason="submitted; response not awaited", run_id=run_id)
             logger.warning("case hand-off to %s via AgentCore failed: %s", agent_name, exc)
-            return DeliveryOutcome(
-                submitted=False, reason=f"AgentCore error: {exc.__class__.__name__}", task_id=task_id, run_id=run_id
-            )
+            return DeliveryOutcome(submitted=False, reason=f"AgentCore error: {exc.__class__.__name__}", run_id=run_id)
         if isinstance(result, dict) and "error" in result:
             error = result["error"]
             message = error.get("message", error) if isinstance(error, dict) else error
             logger.warning("case hand-off to %s via AgentCore returned JSON-RPC error: %s", agent_name, message)
-            return DeliveryOutcome(submitted=False, reason=f"JSON-RPC error: {message}", task_id=task_id, run_id=run_id)
-        logger.info("case handed to %s via AgentCore, run_id=%s", agent_name, run_id)
+            return DeliveryOutcome(submitted=False, reason=f"JSON-RPC error: {message}", run_id=run_id)
+        task_id = _extract_task_id(result)
+        logger.info("case handed to %s via AgentCore, run_id=%s task_id=%s", agent_name, run_id, task_id)
         return DeliveryOutcome(submitted=True, task_id=task_id, run_id=run_id)
 
     async def aclose(self) -> None:

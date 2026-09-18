@@ -346,6 +346,9 @@ class TestSendCase(unittest.TestCase):
         class FakeResponse:
             status_code = 200
 
+            def json(self):
+                return {"jsonrpc": "2.0", "id": "x", "result": {"task": {"id": "server-task-1"}}}
+
         class FakeHttpxClient:
             async def post(self, url, json=None, headers=None):
                 captured["url"] = url
@@ -359,7 +362,8 @@ class TestSendCase(unittest.TestCase):
         outcome = asyncio.run(manager.send_case("diagnosis-agent", _case_payload(), context_id="HELP-1"))
 
         self.assertTrue(outcome.submitted)
-        self.assertIsNotNone(outcome.task_id)
+        # The server assigns the task id; the client adopts it from the response.
+        self.assertEqual(outcome.task_id, "server-task-1")
         self.assertEqual(captured["url"], "http://localhost:9000/")
         self.assertEqual(captured["headers"]["Authorization"], "Bearer tok-123")
         self.assertEqual(captured["headers"]["A2A-Version"], "1.0")
@@ -368,8 +372,10 @@ class TestSendCase(unittest.TestCase):
         self.assertEqual(envelope["method"], "SendMessage")
         message = envelope["params"]["message"]
         self.assertEqual(message["role"], "ROLE_USER")
-        self.assertEqual(message["taskId"], outcome.task_id)
-        self.assertEqual(message["contextId"], "HELP-1")
+        # A new submission carries no taskId/contextId: an inbound taskId
+        # means "resume", and an unknown one is rejected as "Task not found".
+        self.assertNotIn("taskId", message)
+        self.assertNotIn("contextId", message)
         self.assertEqual(message["parts"][0]["data"]["case_id"], "HELP-1")
 
     def test_http_transport_failure_is_not_raised(self) -> None:
@@ -437,6 +443,30 @@ class TestSendCase(unittest.TestCase):
         self.assertEqual(envelope["method"], "SendMessage")
         self.assertEqual(envelope["params"]["message"]["parts"][0]["data"]["case_id"], "HELP-1")
 
+    def test_agentcore_adopts_server_assigned_task_id(self) -> None:
+        import io
+        import json as _json
+
+        manager = self._manager(
+            remote_agent_runtime_arns={
+                "diagnosis-agent": "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/abc"
+            }
+        )
+        body = _json.dumps(
+            {"jsonrpc": "2.0", "id": "x", "result": {"task": {"id": "srv-task-9", "contextId": "ctx-9"}}}
+        ).encode("utf-8")
+        captured = {}
+
+        with patch("boto3.client", return_value=_fake_boto_client(captured, response={"response": io.BytesIO(body)})):
+            outcome = asyncio.run(manager.send_case("diagnosis-agent", _case_payload()))
+
+        self.assertTrue(outcome.submitted)
+        self.assertEqual(outcome.task_id, "srv-task-9")
+        envelope = _json.loads(captured["payload"].decode("utf-8"))
+        message = envelope["params"]["message"]
+        self.assertNotIn("taskId", message)
+        self.assertNotIn("contextId", message)
+
     def test_agentcore_session_id_is_deterministic_per_content(self) -> None:
         manager = self._manager(
             remote_agent_runtime_arns={
@@ -444,12 +474,11 @@ class TestSendCase(unittest.TestCase):
             }
         )
 
-        # Same payload + same task id -> same session id. Patch uuid4 used for
-        # the task id to pin the envelope content.
+        # Same envelope content -> same session id. Patch uuid4 (used for the
+        # messageId and request id) to pin the envelope content.
         with (
             patch("boto3.client", return_value=_fake_boto_client({})),
-            patch("helpdesk_agent.modules.a2a.diagnosis.uuid4", return_value=MagicMock(hex="fixed-task-id")),
-            patch("helpdesk_agent.modules.a2a.client.uuid4", return_value=MagicMock(hex="fixed-task-id")),
+            patch("helpdesk_agent.modules.a2a.diagnosis.uuid4", return_value=MagicMock(hex="fixed-uuid")),
         ):
             first = asyncio.run(manager.send_case("diagnosis-agent", _case_payload(), context_id="ctx"))
             second = asyncio.run(manager.send_case("diagnosis-agent", _case_payload(), context_id="ctx"))
