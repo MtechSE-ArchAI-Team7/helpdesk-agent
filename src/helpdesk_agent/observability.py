@@ -2,13 +2,17 @@
 
 Tracing is always on. When an OTLP endpoint is configured, spans are
 exported via OTLP/HTTP (batch processor) to a collector (Jaeger, Tempo,
-Azure Monitor, etc.). Otherwise spans are written to stdout with
-ConsoleSpanExporter, which is useful for local development.
+Azure Monitor, etc.). Otherwise no exporter is installed — spans are still
+created (so trace/span ids exist for log correlation) but nothing is
+written, keeping stdout/CloudWatch clean. Set OTEL_CONSOLE_EXPORTER=1 to
+dump spans to stdout (local debugging only — do NOT use in deployment,
+every span lands in the app log stream).
 
 Standard OTEL_* environment variables are honored:
   - OTEL_SERVICE_NAME            (default: helpdesk-agent)
   - OTEL_EXPORTER_OTLP_ENDPOINT  (e.g. http://localhost:4318)
   - OTEL_EXPORTER_OTLP_HEADERS   (e.g. authorization=Bearer ...)
+  - OTEL_CONSOLE_EXPORTER        (set to 1/true for local console span dumps)
 
 Instrumented surfaces:
   - FastAPI inbound requests (all routers incl. /webhooks/email, /chat, /a2a)
@@ -55,9 +59,13 @@ def setup_observability(app: FastAPI) -> None:
             # OTLPSpanExporter reads OTEL_EXPORTER_OTLP_* env vars itself.
             provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
             exporter_desc = f"otlp/http -> {endpoint}"
-        else:
+        elif os.getenv("OTEL_CONSOLE_EXPORTER", "").lower() in ("1", "true", "yes"):
+            # Local debugging only: every span is dumped to stdout and would
+            # pollute the app log stream (e.g. CloudWatch) in a deployment.
             provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
             exporter_desc = "console"
+        else:
+            exporter_desc = "none (spans created but not exported)"
 
         trace.set_tracer_provider(provider)
 

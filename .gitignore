@@ -34,5 +34,8 @@ pip-audit.json
 .idea/
 .vscode/
 
+# Project documentation (kept local)
+docs/
+
 # Docker
 *.tar
