@@ -19,6 +19,15 @@ jobs:
       - name: Clone awslabs/mcp source
         run: git clone --depth 1 $SOURCE_REPO mcp-source
 
+      # Upstream image runs the MCP server over stdio (for local Claude/Cursor use);
+      # AgentCore Runtime requires it served over streamable-HTTP at 0.0.0.0:8000/mcp instead.
+      - name: Patch server to run over streamable-HTTP for AgentCore
+        run: |
+          cp docker/cloudwatch-mcp-server/run_http.py \
+            mcp-source/src/cloudwatch-mcp-server/awslabs/cloudwatch_mcp_server/run_http.py
+          sed -i 's#ENTRYPOINT \["awslabs.cloudwatch-mcp-server"\]#ENTRYPOINT ["python3", "-m", "awslabs.cloudwatch_mcp_server.run_http"]#' \
+            mcp-source/src/cloudwatch-mcp-server/Dockerfile
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
