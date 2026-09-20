@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Clone awslabs/mcp source
         run: git clone --depth 1 $SOURCE_REPO mcp-source
 
