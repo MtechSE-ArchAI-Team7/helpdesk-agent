@@ -549,6 +549,14 @@ class HelpdeskWorkflow:
 
         rounds = self._clarification_rounds(state)
         if rounds >= MAX_CLARIFICATION_ROUNDS:
+            if assessment and assessment.decision == "eligible" and assessment.target_url:
+                logger.info(
+                    "case=%s gate=clarification decision=playwright reason=max_rounds rounds=%d max=%d",
+                    case_id,
+                    rounds,
+                    MAX_CLARIFICATION_ROUNDS,
+                )
+                return "playwright"
             logger.info(
                 "case=%s gate=clarification decision=diagnose reason=max_rounds rounds=%d max=%d",
                 case_id,
