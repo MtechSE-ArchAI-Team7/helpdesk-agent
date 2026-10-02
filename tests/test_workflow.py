@@ -326,6 +326,32 @@ async def test_clarification_round_cap_escalates_to_diagnosis(mock_llm_client) -
     assert any("clarification attempts exhausted" in body.lower() for body in comment_bodies)
 
 
+def test_clarification_round_cap_routes_eligible_case_to_playwright(mock_llm_client) -> None:
+    workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
+    state = {
+        "workflow_state": MagicMock(case_id="HELP-56"),
+        "initial_input": {},
+        "triage_result": _triage_result(confidence=0.2, missing_info=["still unclear"]),
+        "faq_results": None,
+        "ticket_id": "HELP-56",
+        "existing_ticket": {
+            "comments": [
+                {"body": "Pending clarifications — round 1"},
+                {"body": "Pending clarifications — round 2"},
+            ]
+        },
+        "playwright_assessment": PlaywrightAssessment(
+            decision="eligible",
+            reason="Browser-visible error with an approved target",
+            target_url="https://portal.example.com/login",
+            expected_error="The login page displays an error",
+        ),
+        "playwright_validation": None,
+    }
+
+    assert workflow._should_clarify(state) == "playwright"
+
+
 @pytest.mark.asyncio
 async def test_ticket_creation_failure_stops_run(mock_llm_client) -> None:
     """If Jira ticket creation fails, stop before ack/triage — no phantom ID."""
