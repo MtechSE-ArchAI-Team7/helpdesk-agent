@@ -141,6 +141,45 @@ The agent uses these MCP tools:
 - `slack.post_approval` - Request approvals
 - `faq.search` - Search FAQ repository
 
+### Self-Hosted Slack MCP Deployment
+
+The **Slack MCP Server** workflow (`.github/workflows/mcp-slack.yml`) builds
+`docker/mcp-slack/Dockerfile` for Linux ARM64 and publishes
+`<account-id>.dkr.ecr.ap-southeast-1.amazonaws.com/aios/mcp-slack:latest`.
+It follows the Playwright image workflow and uses the existing GitHub secrets
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+
+Before running it, create the `aios/mcp-slack` ECR repository in `ap-southeast-1`
+if it does not exist, and ensure the workflow's AWS identity can push to it.
+Once the workflow is available on GitHub, run it from **Actions > Slack MCP Server
+> Run workflow**. Like the other MCP image workflows, this publishes an image;
+it does not create or update an AgentCore runtime or configure a gateway target.
+Point your existing runtime deployment process at the resulting ECR image.
+
+The image pins `korotovsky/slack-mcp-server` to `v1.3.0`, listens on `0.0.0.0:8000`,
+and serves Streamable HTTP MCP at `/mcp`. Supply these environment variables to
+the runtime, not to the image build:
+
+| Variable | Purpose |
+| --- | --- |
+| `SLACK_MCP_XOXB_TOKEN` | Slack bot OAuth token; inject securely from your secret store |
+| `SLACK_MCP_API_KEY` | Separate client-to-server bearer key; configure securely if using server-level authentication |
+| `SLACK_MCP_ENABLED_TOOLS` | Defaults to `channels_list,conversations_history,conversations_replies,users_search,conversations_add_message` |
+| `SLACK_MCP_ADD_MESSAGE_TOOL` | Defaults to `C0C67H6P8E6`; restricts message posting to this channel |
+
+The bot must have `users:read`, `channels:read`, `groups:read`, `im:read`, and
+`mpim:read` for the server's startup caches. Add history scopes for the
+conversation types you need to read and `chat:write` for posting. Install or
+reinstall the Slack app after scope changes, and invite the bot to the target
+channel. Bot tokens do not support message search. No Slack credentials are
+baked into the image or stored in the workflow.
+
+For direct HTTP access, send `Authorization: Bearer <SLACK_MCP_API_KEY>` if a key
+is configured. For AgentCore-hosted access, configure the runtime/gateway's own
+authentication and invocation path as required; the image workflow does not
+provision that integration. This change does not add Slack routing to the
+helpdesk agent's MCP adapter.
+
 ## API Endpoints
 
 ### Email Webhook
