@@ -63,9 +63,10 @@ class PlaywrightValidationFlow:
         except ValueError:
             return None, "invalid_target_url"
 
-        if parsed.scheme != "https" or not host or parsed.username or parsed.password:
-            return None, "https_url_required"
-        if port not in (None, 443):
+        if parsed.scheme not in ("http", "https") or not host or parsed.username or parsed.password:
+            return None, "http_or_https_url_required"
+        allowed_ports = (None, 80) if parsed.scheme == "http" else (None, 443)
+        if port not in allowed_ports:
             return None, "nonstandard_port_not_allowed"
 
         allowed_hosts = {host.lower().rstrip(".") for host in self.config.playwright_allowed_hosts}

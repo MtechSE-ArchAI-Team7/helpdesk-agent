@@ -129,10 +129,12 @@ User Report:
 
 Triage Summary: {triage_summary}
 
-The browser check can only open an explicitly supplied HTTPS URL and inspect the rendered page,
+The browser check can only open an explicitly supplied HTTP or HTTPS URL and inspect the rendered page,
 browser console errors, and network request metadata. It cannot log in, submit forms, change data,
 or perform destructive actions. Do not invent or infer a URL. If the user has not supplied enough
-information, use decision "needs_info" and ask for the URL or safe reproduction details. Do not
+information, use decision "needs_info" and ask for the URL or safe reproduction details. HTTP is
+unencrypted, so only use it for an explicitly allowed trusted host and never provide credentials.
+Do not
 ask the user to send passwords or secrets. Use "not_applicable" for issues that are not browser-
 visible or cannot be safely tested under these constraints.
 

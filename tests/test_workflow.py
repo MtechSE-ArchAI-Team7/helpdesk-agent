@@ -157,7 +157,11 @@ def test_playwright_target_requires_explicit_allowlisted_https_url() -> None:
     assert flow.validate_target(
         "http://portal.example.com/login",
         "The login page shows an error at http://portal.example.com/login",
-    ) == (None, "https_url_required")
+    ) == ("portal.example.com", "allowed")
+    assert flow.validate_target(
+        "http://portal.example.com:8080/login",
+        "The login page shows an error at http://portal.example.com:8080/login",
+    ) == (None, "nonstandard_port_not_allowed")
 
 
 @pytest.mark.asyncio

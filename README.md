@@ -46,7 +46,7 @@ ticket fields.
 
 After triage, the workflow assesses whether a read-only browser check can
 validate the reported error. It only invokes the hosted Playwright MCP runtime
-when the report includes an explicit HTTPS URL whose exact host is in
+when the report includes an explicit HTTP or HTTPS URL whose exact host is in
 `HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS`. The browser check navigates to the
 page and collects a page snapshot, browser console errors, and network request
 metadata in one MCP session. It does not log in, submit forms, or modify data.
@@ -187,7 +187,9 @@ diagnosis-required path.
 
 Playwright validation is skipped unless MCP is enabled, the runtime endpoint is
 configured, and the host allowlist is non-empty. The initial URL must also be
-present in the user's report, use HTTPS, and match an allowlisted host exactly.
+present in the user's report, use HTTP or HTTPS, and match an allowlisted host
+exactly. Only default ports are allowed. HTTP traffic is unencrypted; prefer
+HTTPS and never send credentials through browser validation.
 Apply network egress restrictions at the hosted runtime as well, since browser
 pages can redirect or load resources from other hosts.
 
