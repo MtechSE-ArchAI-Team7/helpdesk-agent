@@ -144,3 +144,39 @@ async def test_playwright_sequence_uses_one_session_and_direct_arguments(monkeyp
         ("browser_navigate", {"url": "https://portal.example.com"}),
         ("browser_snapshot", {}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_playwright_sequence_logs_nested_error_and_failing_tool(monkeypatch, caplog) -> None:
+    @asynccontextmanager
+    async def fake_streamablehttp_client(*args, **kwargs):
+        yield object(), object(), None
+
+    class NestedError(Exception):
+        exceptions = (RuntimeError("unknown tool: browser_navigate"),)
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, tool_name, arguments):
+            raise NestedError("MCP sequence failed")
+
+    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_streamablehttp_client)
+    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
+    adapter = MCPProxyAdapter(MCPConfig(playwright_url="http://playwright:5/mcp"))
+
+    responses = await adapter.call_tool_sequence(
+        [("playwright.browser_navigate", {"url": "https://portal.example.com"})]
+    )
+
+    assert responses[0].status == "failed"
+    assert "tool=browser_navigate status=failed" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
+    assert "unknown tool: browser_navigate" in caplog.text

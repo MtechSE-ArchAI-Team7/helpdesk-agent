@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -14,11 +15,28 @@ from .config import MCPConfig
 logger = logging.getLogger(__name__)
 
 
-def _unwrap_error(exc: BaseException) -> str:
+def _root_exception(exc: BaseException) -> BaseException:
     """Unwrap ExceptionGroup (e.g. anyio TaskGroup failures) to the root cause."""
     while hasattr(exc, "exceptions") and getattr(exc, "exceptions"):
         exc = exc.exceptions[0]
-    return f"{type(exc).__name__}: {exc}"
+    return exc
+
+
+def _unwrap_error(exc: BaseException) -> str:
+    root = _root_exception(exc)
+    return f"{type(root).__name__}: {root}"
+
+
+def _safe_error_detail(exc: BaseException) -> str:
+    """Keep useful exception context while masking URLs and common secrets."""
+    detail = str(exc).replace("\n", " ")
+    detail = re.sub(r"https?://[^\s'\"]+", "[url]", detail)
+    detail = re.sub(
+        r"(?i)\b(authorization|bearer|token|password|secret)(\s*[:=]\s*)[^\s,;]+",
+        r"\1\2[redacted]",
+        detail,
+    )
+    return detail[:240]
 
 
 @dataclass
@@ -276,6 +294,7 @@ class MCPProxyAdapter:
             )
 
         responses: list[MCPResponse] = []
+        active_tool = "mcp_session"
         try:
             async with streamablehttp_client(
                 url,
@@ -297,6 +316,7 @@ class MCPProxyAdapter:
                         else:
                             actual_name = tool_name
                             tool_arguments = {"arguments": arguments}
+                        active_tool = actual_name
                         result = await session.call_tool(actual_name, tool_arguments)
                         response = self._response_from_result(result, actual_name, is_atlassian)
                         responses.append(response)
@@ -304,7 +324,13 @@ class MCPProxyAdapter:
                             break
         except Exception as exc:
             error = _unwrap_error(exc)
-            logger.error("mcp tool_sequence status=failed error_type=%s", type(exc).__name__)
+            root = _root_exception(exc)
+            logger.error(
+                "mcp tool_sequence tool=%s status=failed error_type=%s error=%s",
+                active_tool,
+                type(root).__name__,
+                _safe_error_detail(root),
+            )
             responses.append(MCPResponse(action_id=None, status="failed", content={}, error=error))
         return responses
 
