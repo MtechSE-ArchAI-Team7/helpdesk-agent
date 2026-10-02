@@ -62,6 +62,7 @@ class MCPProxyAdapter:
       with tool names and arguments translated to its schema.
     - zohomail.* -> the Zoho Mail MCP server (zohomail_url).
     - faq.* -> the FAQ MCP server (faq_url).
+    - playwright.* -> the hosted Playwright MCP runtime (playwright_url).
     - everything else -> the default server (base_url).
     Servers without a dedicated URL fall back to base_url.
     """
@@ -70,6 +71,7 @@ class MCPProxyAdapter:
     _ATLASSIAN_PREFIXES = ("jira.", "confluence.")
     _ZOHOMAIL_PREFIX = "zohomail."
     _FAQ_PREFIX = "faq."
+    _PLAYWRIGHT_PREFIX = "playwright."
 
     def __init__(self, config: MCPConfig | None = None) -> None:
         self.config = config or MCPConfig()
@@ -82,6 +84,8 @@ class MCPProxyAdapter:
             return self.config.zohomail_url
         if self.config.faq_url is not None and tool_name.startswith(self._FAQ_PREFIX):
             return self.config.faq_url
+        if self.config.playwright_url is not None and tool_name.startswith(self._PLAYWRIGHT_PREFIX):
+            return self.config.playwright_url
         return self.config.base_url
 
     def _is_atlassian_tool(self, tool_name: str) -> bool:
@@ -90,10 +94,18 @@ class MCPProxyAdapter:
     def _is_zohomail_tool(self, tool_name: str) -> bool:
         return tool_name.startswith(self._ZOHOMAIL_PREFIX)
 
+    def _is_playwright_tool(self, tool_name: str) -> bool:
+        return tool_name.startswith(self._PLAYWRIGHT_PREFIX)
+
     def _translate_zohomail_call(self, tool_name: str) -> str:
         """Strip the internal 'zohomail.' routing prefix; the remainder is the
         real tool name on the Zoho server (e.g. 'ZohoMail_sendReplyEmail')."""
         return tool_name.removeprefix(self._ZOHOMAIL_PREFIX)
+
+    @staticmethod
+    def _translate_playwright_call(tool_name: str) -> str:
+        """Strip the internal routing prefix before calling the hosted server."""
+        return tool_name.removeprefix(MCPProxyAdapter._PLAYWRIGHT_PREFIX)
 
     def _translate_atlassian_call(
         self, tool_name: str, arguments: dict[str, Any]
@@ -132,6 +144,48 @@ class MCPProxyAdapter:
         # Generic fallback: convert dots to underscores, pass args through
         return f"{prefix}{tool_name.replace('.', '_')}", arguments
 
+    @staticmethod
+    def _response_from_result(result: Any, tool_name: str, is_atlassian: bool = False) -> MCPResponse:
+        if result.isError:
+            error_text = "; ".join(
+                getattr(block, "text", None) or str(block) for block in result.content
+            ).strip()
+            if not error_text:
+                error_text = "tool returned isError with no message"
+            if tool_name.startswith("browser_"):
+                logger.error("mcp tool=%s status=failed", tool_name)
+            else:
+                logger.error("mcp tool=%s returned error: %s", tool_name, error_text)
+            return MCPResponse(action_id=None, status="failed", content={}, error=error_text)
+
+        content = _content_to_dict(result.content)
+        structured = getattr(result, "structuredContent", None) or {}
+        data = {**content, **structured} if isinstance(structured, dict) else content
+        raw_status = "completed" if is_atlassian else data.get("status", "completed")
+        status_error: str | None = None
+        if isinstance(raw_status, dict):
+            code = raw_status.get("code")
+            status = "completed" if code in (200, 201, 202) else "failed"
+            if status == "failed":
+                status_error = (
+                    raw_status.get("message")
+                    or raw_status.get("description")
+                    or f"server returned status {raw_status}"
+                )
+        elif isinstance(raw_status, str) and raw_status.lower() in ("success", "ok", "succeeded", "completed"):
+            status = "completed"
+        else:
+            status = raw_status
+        if tool_name.endswith("approval_request") and status == "completed":
+            status = "queued"
+
+        return MCPResponse(
+            action_id=data.get("action_id"),
+            status=status,
+            content=data.get("content", data),
+            error=data.get("error") or status_error,
+        )
+
     async def call_tool(
         self,
         tool_name: str,
@@ -153,6 +207,10 @@ class MCPProxyAdapter:
             tool_name = self._translate_zohomail_call(tool_name)
             # Zoho's server validates strictly (no additionalProperties), so send
             # the arguments as-is, without the legacy envelope keys.
+            tool_arguments = base_arguments
+        elif self._is_playwright_tool(tool_name):
+            url = self._resolve_url(tool_name)
+            tool_name = self._translate_playwright_call(tool_name)
             tool_arguments = base_arguments
         else:
             url = self._resolve_url(tool_name)
@@ -177,55 +235,78 @@ class MCPProxyAdapter:
                     result = await session.call_tool(tool_name, tool_arguments)
         except Exception as exc:
             error = _unwrap_error(exc)
-            logger.error("mcp tool=%s url=%s call failed: %s", tool_name, url, error)
+            if tool_name.startswith("browser_"):
+                logger.error("mcp tool=%s status=failed error_type=%s", tool_name, type(exc).__name__)
+            else:
+                logger.error("mcp tool=%s url=%s call failed: %s", tool_name, url, error)
             return MCPResponse(action_id=None, status="failed", content={}, error=error)
 
-        if result.isError:
-            error_text = "; ".join(
-                getattr(block, "text", None) or str(block) for block in result.content
-            ).strip()
-            if not error_text:
-                error_text = "tool returned isError with no message"
-            logger.error("mcp tool=%s url=%s returned error: %s", tool_name, url, error_text)
-            return MCPResponse(action_id=None, status="failed", content={}, error=error_text)
+        response = self._response_from_result(result, tool_name, is_atlassian)
+        if not wait_for_completion and response.status == "completed":
+            response.status = "queued"
+        return response
 
-        content = _content_to_dict(result.content)
-        structured = getattr(result, "structuredContent", None) or {}
-        data = {**content, **structured} if isinstance(structured, dict) else content
-
-        # Normalize status across server conventions: the legacy proxy returns
-        # "completed", Zoho-style envelopes use {"status": {"code": 200, ...}}
-        # and/or structuredContent with "status": "success".
-        # mcp-atlassian payloads put the resource's own fields at the top level
-        # (e.g. a Jira issue's workflow status {"name": "To Do"}), which is NOT
-        # an envelope — for those tools, the transport-level isError checked
-        # above is authoritative.
-        raw_status = "completed" if is_atlassian else data.get("status", "completed")
-        status_error: str | None = None
-        if isinstance(raw_status, dict):
-            code = raw_status.get("code")
-            status = "completed" if code in (200, 201, 202) else "failed"
-            if status == "failed":
-                # Zoho-style envelope: surface the embedded message instead of None.
-                status_error = (
-                    raw_status.get("message")
-                    or raw_status.get("description")
-                    or f"server returned status {raw_status}"
+    async def call_tool_sequence(
+        self,
+        calls: list[tuple[str, dict[str, Any]]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[MCPResponse]:
+        """Call ordered tools in one MCP session, preserving server-side state."""
+        if not calls:
+            return []
+        urls = {self._resolve_url(tool_name) for tool_name, _ in calls}
+        if len(urls) != 1:
+            return [
+                MCPResponse(
+                    action_id=None,
+                    status="failed",
+                    content={},
+                    error="tool sequence must target a single MCP server",
                 )
-        elif isinstance(raw_status, str) and raw_status.lower() in ("success", "ok", "succeeded", "completed"):
-            status = "completed"
-        else:
-            status = raw_status
-        if not wait_for_completion or tool_name.endswith("approval_request"):
-            if status == "completed":
-                status = "queued"
+            ]
 
-        return MCPResponse(
-            action_id=data.get("action_id"),
-            status=status,
-            content=data.get("content", data),
-            error=data.get("error") or status_error,
-        )
+        url = next(iter(urls))
+        timeout = timeout_seconds
+        if timeout is None:
+            timeout = (
+                self.config.playwright_timeout_seconds
+                if url == self.config.playwright_url
+                else self.config.timeout_seconds
+            )
+
+        responses: list[MCPResponse] = []
+        try:
+            async with streamablehttp_client(
+                url,
+                headers=self.config.headers or None,
+                timeout=timeout,
+            ) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    for tool_name, arguments in calls:
+                        is_atlassian = self._is_atlassian_tool(tool_name)
+                        if is_atlassian:
+                            actual_name, tool_arguments = self._translate_atlassian_call(tool_name, arguments)
+                        elif self._is_zohomail_tool(tool_name):
+                            actual_name = self._translate_zohomail_call(tool_name)
+                            tool_arguments = arguments
+                        elif self._is_playwright_tool(tool_name):
+                            actual_name = self._translate_playwright_call(tool_name)
+                            tool_arguments = arguments
+                        else:
+                            actual_name = tool_name
+                            tool_arguments = {"arguments": arguments}
+                        result = await session.call_tool(actual_name, tool_arguments)
+                        response = self._response_from_result(result, actual_name, is_atlassian)
+                        responses.append(response)
+                        if response.status != "completed":
+                            break
+        except Exception as exc:
+            error = _unwrap_error(exc)
+            logger.error("mcp tool_sequence status=failed error_type=%s", type(exc).__name__)
+            responses.append(MCPResponse(action_id=None, status="failed", content={}, error=error))
+        return responses
 
     async def get_action_status(self, action_id: str) -> MCPResponse:
         """Poll action status. Not a standard MCP method; kept for the mock

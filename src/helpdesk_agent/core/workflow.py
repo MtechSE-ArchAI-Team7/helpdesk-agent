@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -13,6 +14,7 @@ from ..modules.a2a.client import A2AClientManager, DeliveryOutcome
 from ..modules.a2a.diagnosis import build_case_input
 from ..modules.email.service import ZohoMailFlow
 from ..modules.faq.service import FAQFlow
+from ..modules.playwright import PlaywrightAssessment, PlaywrightValidationFlow
 from ..modules.ticketing.service import JiraTicketFlow, extract_ticket_id
 from ..modules.triage.llm import LLMError, LLMTriageClient
 from ..modules.triage.schema import TriageResult
@@ -38,6 +40,8 @@ class GraphState(TypedDict):
     faq_results: dict[str, Any] | None
     ticket_id: str | None
     existing_ticket: dict[str, Any] | None
+    playwright_assessment: PlaywrightAssessment | None
+    playwright_validation: dict[str, Any] | None
 
 
 class HelpdeskWorkflow:
@@ -58,6 +62,7 @@ class HelpdeskWorkflow:
         self.mail_flow = ZohoMailFlow(mcp_adapter)
         self.ticket_flow = JiraTicketFlow(mcp_adapter)
         self.faq_flow = FAQFlow(mcp_adapter)
+        self.playwright_flow = PlaywrightValidationFlow(mcp_adapter)
         self.graph = self._build_graph()
         logger.info(
             "HelpdeskWorkflow initialized: mcp=%s",
@@ -74,8 +79,10 @@ class HelpdeskWorkflow:
         graph.add_node("acknowledge", self._acknowledge_node)
         graph.add_node("triage", self._triage_node)
         graph.add_node("update_ticket", self._update_ticket_node)
+        graph.add_node("assess_playwright", self._assess_playwright_node)
         graph.add_node("check_clarification", self._check_clarification_node)
         graph.add_node("clarify", self._clarify_node)
+        graph.add_node("playwright_validate", self._playwright_validate_node)
         graph.add_node("faq_gate", self._faq_gate_node)
         graph.add_node("resolve_faq", self._resolve_faq_node)
         graph.add_node("diagnose", self._diagnose_node)
@@ -103,17 +110,20 @@ class HelpdeskWorkflow:
         )
         graph.add_edge("acknowledge", "triage")
         graph.add_edge("triage", "update_ticket")
-        graph.add_edge("update_ticket", "check_clarification")
+        graph.add_edge("update_ticket", "assess_playwright")
+        graph.add_edge("assess_playwright", "check_clarification")
         graph.add_conditional_edges(
             "check_clarification",
             self._should_clarify,
             {
                 "clarify": "clarify",
                 "diagnose": "diagnose",
+                "playwright": "playwright_validate",
                 "faq_gate": "faq_gate",
             },
         )
         graph.add_edge("clarify", END)
+        graph.add_edge("playwright_validate", "faq_gate")
         graph.add_conditional_edges(
             "faq_gate",
             self._should_resolve_faq,
@@ -405,6 +415,101 @@ class HelpdeskWorkflow:
         # This node just passes through, the decision is made in _should_clarify
         return state
 
+    async def _assess_playwright_node(self, state: GraphState) -> GraphState:
+        """Assess browser-test feasibility without invoking browser tools."""
+        workflow_state = state["workflow_state"]
+        case_id = workflow_state.case_id
+        config = self.playwright_flow.config
+        skip_reason = None
+        if self.mcp_adapter is None:
+            skip_reason = "mcp_disabled"
+        elif not config.playwright_url:
+            skip_reason = "runtime_not_configured"
+        elif not config.playwright_allowed_hosts:
+            skip_reason = "host_allowlist_empty"
+
+        if skip_reason:
+            state["playwright_assessment"] = None
+            workflow_state.record_history("playwright_assessment", "skipped", skip_reason)
+            logger.info(
+                "case=%s stage=playwright_assessment status=skipped reason=%s",
+                case_id,
+                skip_reason,
+            )
+            return state
+
+        subject, body = self._split_subject_body(state["initial_input"])
+        triage_result = state.get("triage_result")
+        try:
+            assessment = await self.llm_client.assess_playwright_validation(
+                subject,
+                body,
+                triage_result.summary if triage_result else workflow_state.summary,
+            )
+        except LLMError as exc:
+            state["playwright_assessment"] = None
+            workflow_state.record_history(
+                "playwright_assessment",
+                "failed",
+                "Feasibility assessment failed; continuing to FAQ",
+            )
+            logger.warning(
+                "case=%s stage=playwright_assessment status=failed error_type=%s",
+                case_id,
+                type(exc).__name__,
+            )
+            return state
+
+        report = f"{subject}\n\n{body}"
+        if assessment.decision == "eligible":
+            host, reason = self.playwright_flow.validate_target(assessment.target_url, report)
+            if host is None:
+                assessment = assessment.model_copy(
+                    update={"decision": "not_applicable", "reason": reason, "target_url": None}
+                )
+            elif not assessment.expected_error.strip():
+                assessment = assessment.model_copy(
+                    update={
+                        "decision": "needs_info",
+                        "reason": "expected_error_not_specified",
+                        "clarifying_questions": assessment.clarifying_questions
+                        or ["What exact error message or unexpected behavior should the browser check look for?"],
+                        "missing_info": assessment.missing_info or ["expected browser-visible error"],
+                    }
+                )
+
+        state["playwright_assessment"] = assessment
+        if assessment.decision == "needs_info" and triage_result:
+            questions = assessment.clarifying_questions or [
+                "Please share the affected page URL and the steps that lead to the error. Do not include passwords or tokens."
+            ]
+            missing_info = assessment.missing_info or ["browser validation details"]
+            merged_questions = list(dict.fromkeys([*triage_result.clarifying_questions, *questions]))
+            merged_missing = list(dict.fromkeys([*triage_result.missing_info, *missing_info]))
+            triage_result = triage_result.model_copy(
+                update={"clarifying_questions": merged_questions, "missing_info": merged_missing}
+            )
+            state["triage_result"] = triage_result
+            workflow_state.triage = {
+                **(workflow_state.triage or {}),
+                "missing_info": merged_missing,
+                "clarifying_questions": merged_questions,
+            }
+
+        host, _ = self.playwright_flow.validate_target(assessment.target_url, report)
+        workflow_state.record_history(
+            "playwright_assessment",
+            assessment.decision,
+            assessment.reason,
+        )
+        logger.info(
+            "case=%s stage=playwright_assessment status=%s host=%s",
+            case_id,
+            assessment.decision,
+            host or "none",
+        )
+        return state
+
     def _clarification_rounds(self, state: GraphState) -> int:
         """Count prior clarification rounds from the ticket's comments."""
         existing_ticket = state.get("existing_ticket") or {}
@@ -424,8 +529,16 @@ class HelpdeskWorkflow:
             return "faq_gate"
 
         threshold = self.triage_config.confidence_threshold
-        needs_clarification = triage_result.confidence < threshold or bool(triage_result.missing_info)
+        assessment = state.get("playwright_assessment")
+        needs_clarification = (
+            triage_result.confidence < threshold
+            or bool(triage_result.missing_info)
+            or bool(assessment and assessment.decision == "needs_info")
+        )
         if not needs_clarification:
+            if assessment and assessment.decision == "eligible":
+                logger.info("case=%s gate=clarification decision=playwright reason=eligible", case_id)
+                return "playwright"
             logger.info(
                 "case=%s gate=clarification decision=faq_gate reason=confident confidence=%.2f threshold=%.2f",
                 case_id,
@@ -454,6 +567,105 @@ class HelpdeskWorkflow:
             rounds,
         )
         return "clarify"
+
+    async def _playwright_validate_node(self, state: GraphState) -> GraphState:
+        """Run bounded browser diagnostics, record a concise result, and continue to FAQ."""
+        workflow_state = state["workflow_state"]
+        assessment = state.get("playwright_assessment")
+        subject, body = self._split_subject_body(state["initial_input"])
+        report = f"{subject}\n\n{body}"
+        if assessment is None or assessment.decision != "eligible" or not assessment.target_url:
+            workflow_state.record_history(
+                "playwright_validation",
+                "skipped",
+                "No eligible browser validation target",
+            )
+            logger.warning(
+                "case=%s stage=playwright_validation status=skipped reason=assessment_missing",
+                workflow_state.case_id,
+            )
+            return state
+
+        host, reason = self.playwright_flow.validate_target(assessment.target_url, report)
+        if host is None:
+            workflow_state.record_history("playwright_validation", "skipped", reason)
+            logger.warning(
+                "case=%s stage=playwright_validation status=skipped reason=%s",
+                workflow_state.case_id,
+                reason,
+            )
+            return state
+
+        started_at = time.monotonic()
+        logger.info(
+            "case=%s stage=playwright_validation status=started host=%s",
+            workflow_state.case_id,
+            host,
+        )
+        run_result = await self.playwright_flow.validate(assessment.target_url)
+        for tool_status in run_result.get("tool_statuses", []):
+            logger.info(
+                "case=%s stage=playwright_validation tool=%s status=%s",
+                workflow_state.case_id,
+                tool_status.get("tool", "unknown"),
+                tool_status.get("status", "unknown"),
+            )
+
+        if run_result.get("status") == "completed":
+            try:
+                evaluation = await self.llm_client.evaluate_playwright_validation(
+                    assessment.expected_error,
+                    run_result.get("evidence", ""),
+                )
+                result_status = evaluation.status
+                result_summary = evaluation.summary
+            except LLMError:
+                result_status = "inconclusive"
+                result_summary = "Browser evidence was collected but could not be evaluated."
+        else:
+            result_status = "inconclusive"
+            result_summary = "Browser validation did not complete; no conclusion was reached."
+
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        validation = {
+            "status": result_status,
+            "summary": result_summary,
+            "host": host,
+            "tool_statuses": run_result.get("tool_statuses", []),
+        }
+        state["playwright_validation"] = validation
+        workflow_state.metadata["playwright_validation"] = validation
+        workflow_state.evidence.append(
+            {
+                "source": "playwright",
+                "status": result_status,
+                "summary": result_summary,
+                "host": host,
+            }
+        )
+        workflow_status = "completed" if run_result.get("status") == "completed" else "failed"
+        workflow_state.record_history(
+            "playwright_validation",
+            workflow_status,
+            f"outcome={result_status}; host={host}; duration_ms={duration_ms}",
+        )
+        log_method = logger.info if workflow_status == "completed" else logger.warning
+        log_method(
+            "case=%s stage=playwright_validation status=%s outcome=%s host=%s duration_ms=%d",
+            workflow_state.case_id,
+            workflow_status,
+            result_status,
+            host,
+            duration_ms,
+        )
+
+        ticket_id = state.get("ticket_id")
+        if ticket_id:
+            await self.ticket_flow.add_comment(
+                ticket_id,
+                f"Playwright validation: {result_status}. {result_summary} (host: {host})",
+            )
+        return state
 
     async def _clarify_node(self, state: GraphState) -> GraphState:
         """Send clarification questions to the user and mark the ticket pending clarifications."""
@@ -827,6 +1039,8 @@ class HelpdeskWorkflow:
                     "faq_results": None,
                     "ticket_id": None,
                     "existing_ticket": None,
+                    "playwright_assessment": None,
+                    "playwright_validation": None,
                 }
 
                 email_result = await self._email_read_node(email_read_state)
@@ -840,6 +1054,8 @@ class HelpdeskWorkflow:
             "faq_results": None,
             "ticket_id": None,
             "existing_ticket": None,
+            "playwright_assessment": None,
+            "playwright_validation": None,
         }
 
         # Run the graph
@@ -854,4 +1070,16 @@ class HelpdeskWorkflow:
         return final_state
 
     def create_langgraph_plan(self) -> list[str]:
-        return ["load_ticket", "create_ticket", "acknowledge", "triage", "update_ticket", "clarify", "faq_gate", "resolve_faq", "diagnose"]
+        return [
+            "load_ticket",
+            "create_ticket",
+            "acknowledge",
+            "triage",
+            "update_ticket",
+            "assess_playwright",
+            "clarify",
+            "playwright_validate",
+            "faq_gate",
+            "resolve_faq",
+            "diagnose",
+        ]

@@ -28,6 +28,10 @@ class MCPConfig:
     # Optional URL of the FAQ MCP server. When set, faq.* tools are routed
     # there instead of base_url.
     faq_url: str | None = None
+    # Optional URL of the hosted Playwright MCP runtime.
+    playwright_url: str | None = None
+    playwright_timeout_seconds: float = 30.0
+    playwright_allowed_hosts: list[str] = field(default_factory=list)
     # Prefix prepended to mcp-atlassian tool names (e.g. "atlassian_" when the
     # server is mounted behind a gateway that namespaces its tools).
     atlassian_tool_prefix: str = ""
@@ -52,6 +56,13 @@ class MCPConfig:
             zohomail_tool_prefix=os.getenv("HELPDESK_AGENT_MCP_ZOHOMAIL_TOOL_PREFIX", "ZohoMail_"),
             zohomail_from_address=os.getenv("HELPDESK_AGENT_ZOHOMAIL_FROM_ADDRESS") or None,
             faq_url=os.getenv("HELPDESK_AGENT_MCP_FAQ_URL") or None,
+            playwright_url=os.getenv("HELPDESK_AGENT_MCP_PLAYWRIGHT_URL") or None,
+            playwright_timeout_seconds=float(os.getenv("HELPDESK_AGENT_MCP_PLAYWRIGHT_TIMEOUT_SECONDS", "30.0")),
+            playwright_allowed_hosts=[
+                host.strip().lower().rstrip(".")
+                for host in os.getenv("HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS", "").split(",")
+                if host.strip()
+            ],
             atlassian_tool_prefix=os.getenv("HELPDESK_AGENT_MCP_TOOL_PREFIX", ""),
             jira_project_key=os.getenv("HELPDESK_AGENT_JIRA_PROJECT_KEY", "HELP"),
         )

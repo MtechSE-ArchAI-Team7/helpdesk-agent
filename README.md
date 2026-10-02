@@ -14,13 +14,12 @@ src/helpdesk_agent/
 ├── mcp.py                  # MCP proxy adapter (async, httpx)
 ├── models.py               # WorkflowState model
 ├── core/
-│   ├── workflow.py         # LangGraph workflow orchestrator
-│   └── cases.py            # CaseStore for parked cases
+│   └── workflow.py         # LangGraph workflow orchestrator
 └── modules/
     ├── email/
     │   ├── router.py       # POST /webhooks/email
     │   ├── schema.py       # EmailWebhook, WebhookResponse
-    │   └── service.py      # GmailFlow (MCP)
+    │   └── service.py      # ZohoMailFlow (MCP)
     ├── triage/
     │   ├── schema.py       # TriageResult
     │   └── llm.py          # LLM triage client (OpenAI)
@@ -28,8 +27,8 @@ src/helpdesk_agent/
     │   └── service.py      # FAQFlow (MCP)
     ├── ticketing/
     │   └── service.py      # JiraTicketFlow (MCP)
-    ├── approval/
-    │   └── service.py      # SlackApprovalFlow (MCP)
+    ├── playwright.py       # Browser feasibility and validation flow
+    ├── a2a/                # Agent2Agent interface and diagnosis hand-off
     └── chat/
         ├── router.py       # /chat, /conversations endpoints
         ├── schema.py       # ChatMessage, ChatResponse
@@ -38,15 +37,43 @@ src/helpdesk_agent/
 
 ## Workflow
 
-The agent follows this flow for incoming emails:
+For each incoming email, the workflow first checks the subject for a Jira key
+from the configured project (default `HELP`). It loads a matching ticket, or
+creates a new ticket if there is no key or the referenced ticket cannot be
+found. New tickets are acknowledged before triage when the webhook includes a
+message ID. The LLM then classifies the request and the workflow updates the
+ticket fields.
 
-1. **Triage**: LLM analyzes the email and extracts service, issue type, priority, confidence
-2. **Clarification**: If confidence is low, sends a clarification email and parks the case
-3. **FAQ Check**: Searches FAQ repository for existing solutions
-4. **Resolution**: If FAQ match found, sends resolution email (no ticket created)
-5. **Ticketing**: If no FAQ match, creates Jira ticket
-6. **Approval**: If production-impacting, requests Slack approval
-7. **Notification**: Sends confirmation email to user
+After triage, the workflow assesses whether a read-only browser check can
+validate the reported error. It only invokes the hosted Playwright MCP runtime
+when the report includes an explicit HTTPS URL whose exact host is in
+`HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS`. The browser check navigates to the
+page and collects a page snapshot, browser console errors, and network request
+metadata in one MCP session. It does not log in, submit forms, or modify data.
+If the report lacks details needed for a safe check, those questions join the
+normal clarification email. Otherwise, ineligible or unavailable checks
+continue to FAQ search without blocking the case.
+
+Next, the workflow asks for clarification if triage confidence is below
+`HELPDESK_AGENT_TRIAGE_CONFIDENCE_THRESHOLD` (default `0.6`) or triage reports
+missing information. Clarification attempts are counted from Jira comments;
+after two prior rounds, the case goes to diagnosis instead. Otherwise, the
+workflow searches the FAQ service. A top result at or above
+`HELPDESK_AGENT_FAQ_RELEVANCE_THRESHOLD` (default `0.7`) is emailed to the
+requester and recorded on the ticket. If there is no sufficiently relevant FAQ
+result, the ticket is marked as requiring diagnosis and may be handed off to a
+remote diagnosis agent over A2A. That hand-off is fire-and-forget; this agent
+does not poll for the diagnosis result.
+
+Browser outcomes are `reproduced`, `not_reproduced`, or `inconclusive`. A concise
+summary and per-tool statuses are added to the workflow result and Jira ticket.
+Logs include case, stage, decision/outcome, host, tool status, and duration;
+they do not include the browser page contents or full target URL.
+
+The workflow's terminal states are `awaiting_clarification`,
+`faq_answer_provided`, `diagnosis_required`, and `ticket_creation_failed`.
+Ticket data in Jira is used to reconnect email follow-ups: replies should keep
+the ticket key in the subject.
 
 ## Configuration
 
@@ -82,15 +109,26 @@ outbound httpx calls (OpenAI SDK, MCP adapters). Use
 
 - `HELPDESK_AGENT_LLM_MODEL` - LLM model (default: `gpt-4o-mini`)
 - `HELPDESK_AGENT_LLM_BASE_URL` - Custom LLM endpoint
+- `HELPDESK_AGENT_LLM_TIMEOUT_SECONDS` - LLM request timeout (default: `30.0`)
 - `HELPDESK_AGENT_TRIAGE_CONFIDENCE_THRESHOLD` - Confidence threshold for clarification (default: `0.6`)
 - `HELPDESK_AGENT_FAQ_RELEVANCE_THRESHOLD` - FAQ relevance threshold (default: `0.7`)
 
 ### MCP Integration
 
-- `HELPDESK_AGENT_USE_MCP` - Enable MCP adapter (default: `0`)
-- `HELPDESK_AGENT_MCP_BASE_URL` - MCP endpoint URL
+- `HELPDESK_AGENT_USE_MCP` - Enable real MCP calls (default: `0`; services are mocked when disabled)
+- `HELPDESK_AGENT_MCP_BASE_URL` - Default MCP endpoint URL (default: `http://127.0.0.1:8765/mcp`)
+- `HELPDESK_AGENT_MCP_ATLASSIAN_URL` - Optional dedicated Jira/Atlassian MCP endpoint
+- `HELPDESK_AGENT_MCP_ZOHOMAIL_URL` - Optional dedicated Zoho Mail MCP endpoint
+- `HELPDESK_AGENT_MCP_FAQ_URL` - Optional dedicated FAQ MCP endpoint
+- `HELPDESK_AGENT_MCP_PLAYWRIGHT_URL` - Hosted Playwright MCP runtime endpoint
+- `HELPDESK_AGENT_MCP_PLAYWRIGHT_TIMEOUT_SECONDS` - Playwright MCP timeout (default: `30.0`)
+- `HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS` - Comma-separated exact host allowlist for browser navigation
 - `HELPDESK_AGENT_MCP_TIMEOUT_SECONDS` - Request timeout (default: `5.0`)
 - `HELPDESK_AGENT_MCP_AUTH_TOKEN` - Bearer token for MCP endpoint
+- `HELPDESK_AGENT_JIRA_PROJECT_KEY` - Jira project key (default: `HELP`)
+- `HELPDESK_AGENT_MCP_TOOL_PREFIX` - Optional prefix for Atlassian MCP tool names
+- `HELPDESK_AGENT_MCP_ZOHOMAIL_TOOL_PREFIX` - Zoho Mail tool prefix (default: `ZohoMail_`)
+- `HELPDESK_AGENT_ZOHOMAIL_FROM_ADDRESS` - Helpdesk mailbox address used for outgoing mail
 
 ## Diagnosis agent hand-off (Agent 2)
 
@@ -132,14 +170,31 @@ call the ARN directly.
 
 ## MCP Tools
 
-The agent uses these MCP tools:
+The agent's service layer calls these tools (the MCP adapter translates Jira
+tool names and routes calls to the configured server):
 
-- `gmail.send_email` - Send emails
-- `gmail.get_messages` - Retrieve messages
-- `gmail.reply_to_email` - Reply to emails
-- `jira.create_issue` - Create tickets
-- `slack.post_approval` - Request approvals
-- `faq.search` - Search FAQ repository
+- `zohomail.ZohoMail_getMailAccounts` - Resolve the Zoho account ID
+- `zohomail.ZohoMail_sendEmail` - Send email
+- `zohomail.ZohoMail_sendReplyEmail` - Reply to an email
+- `zohomail.ZohoMail_listEmails` - Retrieve messages
+- `jira.create_issue`, `jira.get_issue`, `jira.update_issue`, `jira.add_comment` - Manage Jira tickets
+- `faq.search` - Search the FAQ repository
+- `playwright.browser_navigate`, `playwright.browser_snapshot`, `playwright.browser_console_messages`, `playwright.browser_network_requests` - Read-only browser validation; routed to `HELPDESK_AGENT_MCP_PLAYWRIGHT_URL`
+
+When MCP is disabled, these flows return mock results instead of performing
+external actions. The FAQ mock has no matches, so a normal run proceeds to the
+diagnosis-required path.
+
+Playwright validation is skipped unless MCP is enabled, the runtime endpoint is
+configured, and the host allowlist is non-empty. The initial URL must also be
+present in the user's report, use HTTPS, and match an allowlisted host exactly.
+Apply network egress restrictions at the hosted runtime as well, since browser
+pages can redirect or load resources from other hosts.
+
+Zoho's reply tool expects its own numeric message ID. If an inbound webhook
+provides an RFC822 message ID instead, the mail flow sends a new email (with the
+ticketed subject) when recipient and subject are available; it cannot thread
+that message as a Zoho reply.
 
 ### Self-Hosted Slack MCP Deployment
 
@@ -221,6 +276,20 @@ Request:
 - `GET /conversations` - List all conversations
 - `DELETE /conversations/{id}` - Delete conversation
 
+Chat conversations are stored in memory and are lost when the process restarts.
+Chat and A2A requests can also trigger an unread-mail lookup when the message
+contains both a mail-related term and a read/list/fetch-related term. Inbound
+email requests always go through normal triage.
+
+### A2A
+
+- `GET /.well-known/agent-card.json` - Public agent card
+- `POST /a2a` - A2A JSON-RPC endpoint
+
+The A2A interface uses the same chat/workflow handler. Clarification responses
+are returned as input-required tasks; other results complete the task. For
+outbound diagnosis hand-off configuration, see [Diagnosis agent hand-off](#diagnosis-agent-hand-off-agent-2).
+
 ## Running
 
 ### Development
@@ -264,11 +333,14 @@ uv run mypy
 
 ## Error Handling
 
-The agent follows a fail-fast policy:
+Failure handling depends on the workflow stage:
 
-- Missing LLM API key → Startup error
-- LLM call failure → HTTP 502
-- MCP tool failure → HTTP 502
+- Missing LLM API key → Startup error.
+- LLM triage failure → The workflow raises an error; the request fails.
+- Jira ticket creation failure → The workflow stops before acknowledgment and triage, with `ticket_creation_failed` as its state.
+- FAQ search failure or no sufficiently relevant match → The workflow routes to diagnosis-required.
+- Email send/reply failures → Recorded in workflow history; they do not by themselves stop the workflow.
+- Outbound diagnosis hand-off failure → Recorded in workflow metadata/history; the workflow continues and adds a Jira comment when a ticket exists.
 
 ## License
 

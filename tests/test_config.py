@@ -28,6 +28,9 @@ class TestMCPConfig(unittest.TestCase):
             self.assertFalse(config.enable_async)
             self.assertIsNone(config.auth_token)
             self.assertEqual(config.headers, {})
+            self.assertIsNone(config.playwright_url)
+            self.assertEqual(config.playwright_timeout_seconds, 30.0)
+            self.assertEqual(config.playwright_allowed_hosts, [])
 
     def test_from_env_reads_custom_values(self) -> None:
         environment = {
@@ -35,6 +38,9 @@ class TestMCPConfig(unittest.TestCase):
             "HELPDESK_AGENT_MCP_TIMEOUT_SECONDS": "10.5",
             "HELPDESK_AGENT_MCP_ENABLE_ASYNC": "1",
             "HELPDESK_AGENT_MCP_AUTH_TOKEN": "secret-token",
+            "HELPDESK_AGENT_MCP_PLAYWRIGHT_URL": "https://playwright.example.com/mcp",
+            "HELPDESK_AGENT_MCP_PLAYWRIGHT_TIMEOUT_SECONDS": "45",
+            "HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS": "portal.example.com, internal.example.com.",
         }
         with patch.dict(os.environ, environment, clear=True):
             config = MCPConfig.from_env()
@@ -43,6 +49,9 @@ class TestMCPConfig(unittest.TestCase):
             self.assertTrue(config.enable_async)
             self.assertEqual(config.auth_token, "secret-token")
             self.assertEqual(config.headers["Authorization"], "Bearer secret-token")
+            self.assertEqual(config.playwright_url, "https://playwright.example.com/mcp")
+            self.assertEqual(config.playwright_timeout_seconds, 45.0)
+            self.assertEqual(config.playwright_allowed_hosts, ["portal.example.com", "internal.example.com"])
 
 
 if __name__ == "__main__":

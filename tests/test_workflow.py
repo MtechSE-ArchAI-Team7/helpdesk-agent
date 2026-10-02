@@ -1,8 +1,12 @@
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from helpdesk_agent.config import MCPConfig
 from helpdesk_agent.core.workflow import HelpdeskWorkflow
+from helpdesk_agent.mcp import MCPProxyAdapter, MCPResponse
+from helpdesk_agent.modules.playwright import PlaywrightAssessment, PlaywrightEvaluation, PlaywrightValidationFlow
 from helpdesk_agent.modules.ticketing.service import extract_ticket_id
 from helpdesk_agent.modules.triage.schema import TriageResult
 
@@ -135,6 +139,81 @@ def test_text_to_html_renders_bullets_as_list(mock_llm_client) -> None:
     assert "<li>What time did it fail?</li>" in html
     assert "<p>Thank you for contacting support. We need:</p>" in html
     assert "<p>Best regards,</p>" in html
+
+
+def test_playwright_target_requires_explicit_allowlisted_https_url() -> None:
+    flow = PlaywrightValidationFlow(
+        config=MCPConfig(playwright_allowed_hosts=["portal.example.com"]),
+    )
+
+    assert flow.validate_target(
+        "https://portal.example.com/login",
+        "The login page shows an error at https://portal.example.com/login",
+    ) == ("portal.example.com", "allowed")
+    assert flow.validate_target(
+        "https://untrusted.example/login",
+        "The login page shows an error at https://untrusted.example/login",
+    ) == (None, "host_not_allowlisted")
+    assert flow.validate_target(
+        "http://portal.example.com/login",
+        "The login page shows an error at http://portal.example.com/login",
+    ) == (None, "https_url_required")
+
+
+@pytest.mark.asyncio
+async def test_playwright_validation_records_outcome_and_logs_status(mock_llm_client, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="helpdesk_agent.core.workflow")
+    config = MCPConfig(
+        playwright_url="https://playwright.example.com/mcp",
+        playwright_allowed_hosts=["portal.example.com"],
+    )
+    adapter = MCPProxyAdapter(config)
+    adapter.call_tool_sequence = AsyncMock(
+        return_value=[
+            MCPResponse(None, "completed", {"text": "page opened"}),
+            MCPResponse(None, "completed", {"text": "page snapshot"}),
+            MCPResponse(None, "completed", {"text": "console error: 500"}),
+            MCPResponse(None, "completed", {"text": "GET /api/login 500"}),
+        ]
+    )
+    mock_llm_client.assess_playwright_validation = AsyncMock(
+        return_value=PlaywrightAssessment(
+            decision="eligible",
+            reason="Browser-visible login error",
+            target_url="https://portal.example.com/login",
+            expected_error="A 500 error on login",
+        )
+    )
+    mock_llm_client.evaluate_playwright_validation = AsyncMock(
+        return_value=PlaywrightEvaluation(status="reproduced", summary="The login request returned HTTP 500.")
+    )
+
+    workflow = HelpdeskWorkflow(mcp_adapter=adapter, llm_client=mock_llm_client)
+    workflow.ticket_flow.create_ticket = AsyncMock(
+        return_value={"status": "created", "ticket_id": "HELP-88", "ticket_url": "https://jira/HELP-88"}
+    )
+    workflow.ticket_flow.update_ticket = AsyncMock(return_value={"status": "updated"})
+    workflow.ticket_flow.add_comment = AsyncMock(return_value={"status": "commented"})
+    workflow.faq_flow.search = AsyncMock(return_value={"status": "success", "results": [], "count": 0})
+
+    state = await workflow.run(
+        {
+            "case_id": "case-browser",
+            "summary": "Login fails\n\nThe login page returns HTTP 500 at https://portal.example.com/login",
+            "subject": "Login fails",
+            "source": "email",
+            "sender": "user@example.com",
+        }
+    )
+
+    assert state.metadata["playwright_validation"]["status"] == "reproduced"
+    assert state.evidence[-1]["source"] == "playwright"
+    assert any(
+        entry["step"] == "playwright_validation" and "outcome=reproduced" in entry["detail"]
+        for entry in state.history
+    )
+    assert "stage=playwright_validation status=completed outcome=reproduced" in caplog.text
+    adapter.call_tool_sequence.assert_awaited_once()
 
 
 @pytest.mark.asyncio
