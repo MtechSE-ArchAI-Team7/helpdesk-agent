@@ -32,6 +32,7 @@ class MCPConfig:
     playwright_url: str | None = None
     playwright_timeout_seconds: float = 30.0
     playwright_allowed_hosts: list[str] = field(default_factory=list)
+    playwright_tool_prefix: str = "mcp-playwright___"
     # Prefix prepended to mcp-atlassian tool names (e.g. "atlassian_" when the
     # server is mounted behind a gateway that namespaces its tools).
     atlassian_tool_prefix: str = ""
@@ -63,6 +64,7 @@ class MCPConfig:
                 for host in os.getenv("HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS", "").split(",")
                 if host.strip()
             ],
+            playwright_tool_prefix=os.getenv("HELPDESK_AGENT_MCP_PLAYWRIGHT_TOOL_PREFIX", "mcp-playwright___"),
             atlassian_tool_prefix=os.getenv("HELPDESK_AGENT_MCP_TOOL_PREFIX", ""),
             jira_project_key=os.getenv("HELPDESK_AGENT_JIRA_PROJECT_KEY", "HELP"),
         )

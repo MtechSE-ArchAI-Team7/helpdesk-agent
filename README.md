@@ -121,6 +121,7 @@ outbound httpx calls (OpenAI SDK, MCP adapters). Use
 - `HELPDESK_AGENT_MCP_ZOHOMAIL_URL` - Optional dedicated Zoho Mail MCP endpoint
 - `HELPDESK_AGENT_MCP_FAQ_URL` - Optional dedicated FAQ MCP endpoint
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_URL` - Hosted Playwright MCP runtime endpoint
+- `HELPDESK_AGENT_MCP_PLAYWRIGHT_TOOL_PREFIX` - AgentCore Gateway target namespace prefix (default: `mcp-playwright___`; set empty for direct MCP server access)
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_TIMEOUT_SECONDS` - Playwright MCP timeout (default: `30.0`)
 - `HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS` - Comma-separated exact host allowlist for browser navigation
 - `HELPDESK_AGENT_MCP_TIMEOUT_SECONDS` - Request timeout (default: `5.0`)
@@ -179,7 +180,7 @@ tool names and routes calls to the configured server):
 - `zohomail.ZohoMail_listEmails` - Retrieve messages
 - `jira.create_issue`, `jira.get_issue`, `jira.update_issue`, `jira.add_comment` - Manage Jira tickets
 - `faq.search` - Search the FAQ repository
-- `playwright.browser_navigate`, `playwright.browser_snapshot`, `playwright.browser_console_messages`, `playwright.browser_network_requests` - Read-only browser validation; routed to `HELPDESK_AGENT_MCP_PLAYWRIGHT_URL`
+- `playwright.browser_navigate`, `playwright.browser_snapshot`, `playwright.browser_console_messages`, `playwright.browser_network_requests` - Read-only browser validation; routed to `HELPDESK_AGENT_MCP_PLAYWRIGHT_URL` and prefixed for the gateway target
 
 When MCP is disabled, these flows return mock results instead of performing
 external actions. The FAQ mock has no matches, so a normal run proceeds to the

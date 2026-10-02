@@ -218,6 +218,8 @@ async def test_playwright_validation_records_outcome_and_logs_status(mock_llm_cl
     )
     assert "stage=playwright_validation status=completed outcome=reproduced" in caplog.text
     adapter.call_tool_sequence.assert_awaited_once()
+    calls = adapter.call_tool_sequence.await_args.args[0]
+    assert calls[-1] == ("playwright.browser_network_requests", {"static": False})
 
 
 @pytest.mark.asyncio

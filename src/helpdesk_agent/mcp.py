@@ -120,10 +120,9 @@ class MCPProxyAdapter:
         real tool name on the Zoho server (e.g. 'ZohoMail_sendReplyEmail')."""
         return tool_name.removeprefix(self._ZOHOMAIL_PREFIX)
 
-    @staticmethod
-    def _translate_playwright_call(tool_name: str) -> str:
+    def _translate_playwright_call(self, tool_name: str) -> str:
         """Strip the internal routing prefix before calling the hosted server."""
-        return tool_name.removeprefix(MCPProxyAdapter._PLAYWRIGHT_PREFIX)
+        return f"{self.config.playwright_tool_prefix}{tool_name.removeprefix(self._PLAYWRIGHT_PREFIX)}"
 
     def _translate_atlassian_call(
         self, tool_name: str, arguments: dict[str, Any]

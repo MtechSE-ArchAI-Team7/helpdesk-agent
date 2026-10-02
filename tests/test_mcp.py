@@ -100,6 +100,11 @@ def test_translate_zohomail_strips_routing_prefix() -> None:
     assert adapter._translate_zohomail_call("zohomail.ZohoMail_getMailAccounts") == "ZohoMail_getMailAccounts"
 
 
+def test_translate_playwright_adds_gateway_target_prefix() -> None:
+    adapter = MCPProxyAdapter(MCPConfig(playwright_tool_prefix="mcp-atlassian___"))
+    assert adapter._translate_playwright_call("playwright.browser_navigate") == "mcp-atlassian___browser_navigate"
+
+
 @pytest.mark.asyncio
 async def test_playwright_sequence_uses_one_session_and_direct_arguments(monkeypatch) -> None:
     calls = []
@@ -129,7 +134,9 @@ async def test_playwright_sequence_uses_one_session_and_direct_arguments(monkeyp
 
     monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_streamablehttp_client)
     monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
-    adapter = MCPProxyAdapter(MCPConfig(playwright_url="http://playwright:5/mcp"))
+    adapter = MCPProxyAdapter(
+        MCPConfig(playwright_url="http://playwright:5/mcp", playwright_tool_prefix="")
+    )
 
     responses = await adapter.call_tool_sequence(
         [
@@ -177,6 +184,6 @@ async def test_playwright_sequence_logs_nested_error_and_failing_tool(monkeypatc
     )
 
     assert responses[0].status == "failed"
-    assert "tool=browser_navigate status=failed" in caplog.text
+    assert "tool=mcp-playwright___browser_navigate status=failed" in caplog.text
     assert "error_type=RuntimeError" in caplog.text
     assert "unknown tool: browser_navigate" in caplog.text

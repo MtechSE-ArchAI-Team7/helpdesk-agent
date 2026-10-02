@@ -83,7 +83,7 @@ class PlaywrightValidationFlow:
             ("playwright.browser_navigate", {"url": target_url}),
             ("playwright.browser_snapshot", {}),
             ("playwright.browser_console_messages", {"level": "error"}),
-            ("playwright.browser_network_requests", {}),
+            ("playwright.browser_network_requests", {"static": False}),
         ]
         responses = await self.mcp_adapter.call_tool_sequence(
             calls,
