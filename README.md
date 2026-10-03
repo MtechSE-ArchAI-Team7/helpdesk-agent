@@ -120,6 +120,8 @@ outbound httpx calls (OpenAI SDK, MCP adapters). Use
 - `HELPDESK_AGENT_MCP_ATLASSIAN_URL` - Optional dedicated Jira/Atlassian MCP endpoint
 - `HELPDESK_AGENT_MCP_ZOHOMAIL_URL` - Optional dedicated Zoho Mail MCP endpoint
 - `HELPDESK_AGENT_MCP_FAQ_URL` - Optional dedicated FAQ MCP endpoint
+- `HELPDESK_AGENT_MCP_FAQ_AUTH_MODE` - FAQ inbound authentication: `iam` for SigV4 or `bearer` (default). Other MCP services retain their existing authentication.
+- `HELPDESK_AGENT_MCP_FAQ_REGION` - Optional FAQ IAM signing-region override; otherwise inferred from the AWS gateway hostname.
 - `HELPDESK_AGENT_MCP_FAQ_TOOL_PREFIX` - Optional managed Knowledge Base gateway target prefix, e.g. `mcp-knowledgebase___`; when set, calls `<prefix>Retrieve` with `retrievalQuery.text`. Unset retains legacy `faq.search`; empty uses unprefixed `Retrieve`.
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_URL` - Hosted Playwright MCP runtime endpoint
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_TOOL_PREFIX` - AgentCore Gateway target namespace prefix (default: `mcp-playwright___`; set empty for direct MCP server access)
@@ -183,8 +185,15 @@ review knowledge-base content and calibrate its score threshold before enabling
 automatic requester-facing answers.
 
 The gateway handles IAM authentication to the managed Knowledge Base backend.
-This is separate from inbound gateway authentication: the current MCP client
-supports bearer headers, not IAM/SigV4-signed inbound requests.
+This is separate from inbound gateway authentication. Set
+`HELPDESK_AGENT_MCP_FAQ_AUTH_MODE=iam` to sign FAQ MCP requests with SigV4 using
+the AWS default credential chain, including refreshable runtime execution-role
+credentials. IAM mode omits the shared bearer Authorization header for FAQ
+calls. The caller role needs `bedrock-agentcore:InvokeGateway` scoped to the FAQ
+gateway ARN; the gateway service role separately needs backend retrieval access.
+For a gateway in `ap-southeast-2`, the signing region must also be
+`ap-southeast-2`, regardless of the helpdesk runtime's region. No AWS keys should
+be placed in the env template or committed to the repository.
 
 The agent's service layer calls these tools (the MCP adapter translates Jira
 tool names and routes calls to the configured server):

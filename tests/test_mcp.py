@@ -1,11 +1,14 @@
 import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+import httpx
 import pytest
+from botocore.credentials import Credentials
 
 from helpdesk_agent.config import MCPConfig
-from helpdesk_agent.mcp import MCPProxyAdapter
+from helpdesk_agent.mcp import GatewayIAMAuth, MCPProxyAdapter
 from helpdesk_agent.mock_mcp_server import MockMCPServer
 
 
@@ -104,6 +107,34 @@ def test_translate_zohomail_strips_routing_prefix() -> None:
 def test_translate_playwright_adds_gateway_target_prefix() -> None:
     adapter = MCPProxyAdapter(MCPConfig(playwright_tool_prefix="mcp-atlassian___"))
     assert adapter._translate_playwright_call("playwright.browser_navigate") == "mcp-atlassian___browser_navigate"
+
+
+@pytest.mark.asyncio
+async def test_iam_auth_signs_each_method_with_temporary_credentials() -> None:
+    auth = GatewayIAMAuth("ap-southeast-2")
+    auth.session = MagicMock()
+    auth.session.get_credentials.return_value = Credentials("test-access", "test-secret", "test-session")
+    observed = []
+
+    def transport(request):
+        observed.append(request)
+        assert request.headers["Authorization"].startswith("AWS4-HMAC-SHA256 ")
+        assert "/ap-southeast-2/bedrock-agentcore/aws4_request" in request.headers["Authorization"]
+        assert request.headers["X-Amz-Security-Token"] == "test-session"
+        assert "X-Amz-Date" in request.headers
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(auth=auth, transport=httpx.MockTransport(transport)) as client:
+        for method in ("POST", "GET", "DELETE"):
+            await client.request(
+                method,
+                "https://rag.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp",
+                headers={"Authorization": "Bearer test-token"},
+                content=b'{"jsonrpc":"2.0"}' if method == "POST" else b"",
+            )
+
+    assert [request.method for request in observed] == ["POST", "GET", "DELETE"]
+    assert auth.session.get_credentials.call_count == 3
 
 
 @pytest.mark.asyncio

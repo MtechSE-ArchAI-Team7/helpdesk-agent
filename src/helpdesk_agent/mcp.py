@@ -1,18 +1,60 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, AsyncGenerator
+from urllib.parse import urlsplit
 from uuid import uuid4
 
+import httpx
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+from botocore.exceptions import NoCredentialsError
+from botocore.session import get_session
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from .config import MCPConfig
 
 logger = logging.getLogger(__name__)
+
+
+class GatewayIAMAuth(httpx.Auth):
+    """Sign each MCP HTTP request using refreshable AWS role credentials."""
+
+    requires_request_body = True
+
+    def __init__(self, region: str) -> None:
+        self.region = region
+        self.session = get_session()
+
+    def _sign(self, request: httpx.Request) -> dict[str, str]:
+        credentials = self.session.get_credentials()
+        if credentials is None:
+            raise NoCredentialsError()
+        unsigned_headers = {
+            key: value for key, value in request.headers.items()
+            if key.lower() not in ("authorization", "x-amz-date", "x-amz-security-token")
+        }
+        aws_request = AWSRequest(
+            method=request.method,
+            url=str(request.url),
+            data=request.content,
+            headers=unsigned_headers,
+        )
+        SigV4Auth(credentials.get_frozen_credentials(), "bedrock-agentcore", self.region).add_auth(aws_request)
+        return dict(aws_request.headers.items())
+
+    async def async_auth_flow(self, request: httpx.Request) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        await request.aread()
+        headers = await asyncio.to_thread(self._sign, request)
+        for name in ("authorization", "x-amz-date", "x-amz-security-token"):
+            request.headers.pop(name, None)
+        request.headers.update(headers)
+        yield request
 
 
 def _root_exception(exc: BaseException) -> BaseException:
@@ -214,6 +256,7 @@ class MCPProxyAdapter:
         wait_for_completion: bool = True,
     ) -> MCPResponse:
         base_arguments = dict(arguments or {})
+        is_faq = tool_name.startswith(self._FAQ_PREFIX)
 
         is_atlassian = self._is_atlassian_tool(tool_name)
         if is_atlassian:
@@ -246,10 +289,29 @@ class MCPProxyAdapter:
             tool_arguments = {"arguments": base_arguments}
 
         try:
+            transport_options: dict[str, Any] = {}
+            headers = self.config.headers or None
+            if is_faq and self.config.faq_auth_mode == "iam":
+                region = self.config.faq_region
+                if not region:
+                    host = urlsplit(url).hostname or ""
+                    match = re.search(r"\.bedrock-agentcore\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$", host)
+                    if not match:
+                        raise ValueError("Set HELPDESK_AGENT_MCP_FAQ_REGION for an IAM endpoint without an AWS region")
+                    region = match.group(1)
+                headers = {
+                    key: value for key, value in self.config.headers.items()
+                    if key.lower() != "authorization"
+                } or None
+                transport_options["auth"] = GatewayIAMAuth(region)
+                logger.info("mcp faq_auth mode=iam region=%s", region)
+            elif is_faq and self.config.faq_auth_mode != "bearer":
+                raise ValueError("HELPDESK_AGENT_MCP_FAQ_AUTH_MODE must be bearer or iam")
             async with streamablehttp_client(
                 url,
-                headers=self.config.headers or None,
+                headers=headers,
                 timeout=self.config.timeout_seconds,
+                **transport_options,
             ) as (read_stream, write_stream, _):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()

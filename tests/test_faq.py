@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from helpdesk_agent.config import MCPConfig
-from helpdesk_agent.mcp import MCPProxyAdapter
+from helpdesk_agent.mcp import GatewayIAMAuth, MCPProxyAdapter
 from helpdesk_agent.mock_mcp_server import MockMCPServer
 from helpdesk_agent.modules.faq.service import FAQFlow
 
@@ -43,7 +43,8 @@ async def test_faq_search_with_mcp(mock_server) -> None:
 
 
 @pytest.mark.asyncio
-async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_results(monkeypatch) -> None:
+@pytest.mark.parametrize("auth_mode", ["bearer", "iam"])
+async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_results(monkeypatch, auth_mode) -> None:
     calls = []
     payload = {
         "retrievalResults": [{
@@ -59,7 +60,14 @@ async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_r
 
     @asynccontextmanager
     async def fake_transport(*args, **kwargs):
-        assert args[0] == "https://gateway.example/mcp"
+        assert args[0] == "https://rag.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp"
+        if auth_mode == "iam":
+            assert isinstance(kwargs["auth"], GatewayIAMAuth)
+            assert kwargs["auth"].region == "ap-southeast-2"
+            assert kwargs["headers"] is None
+        else:
+            assert "auth" not in kwargs
+            assert kwargs["headers"] == {"Authorization": "Bearer test-token"}
         yield object(), object(), None
 
     class FakeSession:
@@ -81,7 +89,10 @@ async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_r
     monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_transport)
     monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
     adapter = MCPProxyAdapter(MCPConfig(
-        faq_url="https://gateway.example/mcp", faq_tool_prefix="ops-knowledge___",
+        faq_url="https://rag.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp",
+        faq_tool_prefix="ops-knowledge___",
+        faq_auth_mode=auth_mode,
+        headers={"Authorization": "Bearer test-token"},
     ))
 
     result = await FAQFlow(adapter).search("Checkout returns HTTP 500", max_results=3)
