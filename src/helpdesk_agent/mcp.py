@@ -302,6 +302,21 @@ class MCPProxyAdapter:
             ) as (read_stream, write_stream, _):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
+                    if any(self._is_playwright_tool(name) for name, _ in calls):
+                        active_tool = "tools/list"
+                        tool_names: list[str] = []
+                        cursor: str | None = None
+                        while True:
+                            catalog = await session.list_tools(cursor=cursor)
+                            tool_names.extend(tool.name for tool in catalog.tools)
+                            cursor = catalog.nextCursor
+                            if not cursor:
+                                break
+                        logger.info(
+                            "mcp tool_list status=completed count=%d tools=%s",
+                            len(tool_names),
+                            json.dumps(tool_names),
+                        )
                     for tool_name, arguments in calls:
                         is_atlassian = self._is_atlassian_tool(tool_name)
                         if is_atlassian:
@@ -316,6 +331,8 @@ class MCPProxyAdapter:
                             actual_name = tool_name
                             tool_arguments = {"arguments": arguments}
                         active_tool = actual_name
+                        if self._is_playwright_tool(tool_name):
+                            logger.info("mcp tool_sequence tool=%s status=started", actual_name)
                         result = await session.call_tool(actual_name, tool_arguments)
                         response = self._response_from_result(result, actual_name, is_atlassian)
                         responses.append(response)

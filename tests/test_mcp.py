@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -106,8 +107,10 @@ def test_translate_playwright_adds_gateway_target_prefix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_playwright_sequence_uses_one_session_and_direct_arguments(monkeypatch) -> None:
+async def test_playwright_sequence_uses_one_session_and_direct_arguments(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="helpdesk_agent.mcp")
     calls = []
+    events = []
     sessions = {"initialized": 0}
 
     @asynccontextmanager
@@ -124,7 +127,14 @@ async def test_playwright_sequence_uses_one_session_and_direct_arguments(monkeyp
         async def initialize(self):
             sessions["initialized"] += 1
 
+        async def list_tools(self, cursor=None):
+            events.append(("tools/list", cursor))
+            if cursor is None:
+                return SimpleNamespace(tools=[SimpleNamespace(name="browser_navigate")], nextCursor="page-2")
+            return SimpleNamespace(tools=[SimpleNamespace(name="browser_snapshot")], nextCursor=None)
+
         async def call_tool(self, tool_name, arguments):
+            events.append((tool_name, None))
             calls.append((tool_name, arguments))
             return SimpleNamespace(
                 isError=False,
@@ -147,6 +157,14 @@ async def test_playwright_sequence_uses_one_session_and_direct_arguments(monkeyp
 
     assert [response.status for response in responses] == ["completed", "completed"]
     assert sessions["initialized"] == 1
+    assert events == [
+        ("tools/list", None),
+        ("tools/list", "page-2"),
+        ("browser_navigate", None),
+        ("browser_snapshot", None),
+    ]
+    assert 'count=2 tools=["browser_navigate", "browser_snapshot"]' in caplog.text
+    assert "tool=browser_navigate status=started" in caplog.text
     assert calls == [
         ("browser_navigate", {"url": "https://portal.example.com"}),
         ("browser_snapshot", {}),
@@ -171,6 +189,9 @@ async def test_playwright_sequence_logs_nested_error_and_failing_tool(monkeypatc
 
         async def initialize(self):
             return None
+
+        async def list_tools(self, cursor=None):
+            return SimpleNamespace(tools=[], nextCursor=None)
 
         async def call_tool(self, tool_name, arguments):
             raise NestedError("MCP sequence failed")
