@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -45,12 +46,14 @@ async def test_faq_search_with_mcp(mock_server) -> None:
 async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_results(monkeypatch) -> None:
     calls = []
     payload = {
-        "resultCount": 1,
-        "results": [{
-            "text": "Approved troubleshooting steps",
+        "retrievalResults": [{
+            "content": {"type": "TEXT", "text": "Approved troubleshooting steps"},
             "score": 0.85,
             "metadata": {"title": "Checkout errors"},
             "location": {"s3Location": {"uri": "s3://knowledge/runbook.txt"}},
+        }, {
+            "content": {"type": "IMAGE", "byteContent": "image-data"},
+            "score": 0.99,
         }],
     }
 
@@ -71,7 +74,9 @@ async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_r
 
         async def call_tool(self, name, arguments):
             calls.append((name, arguments))
-            return SimpleNamespace(isError=False, content=[], structuredContent=payload)
+            return SimpleNamespace(
+                isError=False, content=[SimpleNamespace(text=json.dumps(payload))], structuredContent={},
+            )
 
     monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_transport)
     monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
@@ -81,10 +86,11 @@ async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_r
 
     result = await FAQFlow(adapter).search("Checkout returns HTTP 500", max_results=3)
 
-    assert calls == [("ops-knowledge___search_ops_knowledge", {
-        "query": "Checkout returns HTTP 500", "numberOfResults": 3,
+    assert calls == [("ops-knowledge___Retrieve", {
+        "retrievalQuery": {"text": "Checkout returns HTTP 500"},
     })]
     assert result["count"] == 1
     assert result["results"][0]["body"] == "Approved troubleshooting steps"
     assert result["results"][0]["title"] == "Checkout errors"
-    assert result["results"][0]["location"] == payload["results"][0]["location"]
+    assert result["results"][0]["location"] == payload["retrievalResults"][0]["location"]
+    assert result["results"][0]["score"] == 0.85

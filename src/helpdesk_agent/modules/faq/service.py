@@ -42,14 +42,16 @@ class FAQFlow:
                 {
                     **item,
                     "title": (item.get("metadata") or {}).get("title", "Operational knowledge excerpt"),
-                    "body": item.get("text", ""),
+                    "body": item["content"]["text"],
+                    "score": item.get("score") or 0,
                 }
-                for item in results
+                for item in response.content.get("retrievalResults", [])
+                if (item.get("content") or {}).get("text", "").strip()
             ]
 
         return {
             "status": "success",
             "results": results,
-            "count": response.content.get("resultCount", response.content.get("count", len(results))),
+            "count": len(results),
             "action_id": response.action_id,
         }

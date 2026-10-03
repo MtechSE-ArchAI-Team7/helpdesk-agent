@@ -120,7 +120,7 @@ outbound httpx calls (OpenAI SDK, MCP adapters). Use
 - `HELPDESK_AGENT_MCP_ATLASSIAN_URL` - Optional dedicated Jira/Atlassian MCP endpoint
 - `HELPDESK_AGENT_MCP_ZOHOMAIL_URL` - Optional dedicated Zoho Mail MCP endpoint
 - `HELPDESK_AGENT_MCP_FAQ_URL` - Optional dedicated FAQ MCP endpoint
-- `HELPDESK_AGENT_MCP_FAQ_TOOL_PREFIX` - Optional knowledge-search gateway target prefix, e.g. `ops-knowledge___`; when set, calls `<prefix>search_ops_knowledge` with `query` and `numberOfResults`. Unset retains legacy `faq.search`; empty uses the unprefixed Lambda tool name.
+- `HELPDESK_AGENT_MCP_FAQ_TOOL_PREFIX` - Optional managed Knowledge Base gateway target prefix, e.g. `mcp-knowledgebase___`; when set, calls `<prefix>Retrieve` with `retrievalQuery.text`. Unset retains legacy `faq.search`; empty uses unprefixed `Retrieve`.
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_URL` - Hosted Playwright MCP runtime endpoint
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_TOOL_PREFIX` - AgentCore Gateway target namespace prefix (default: `mcp-playwright___`; set empty for direct MCP server access)
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_TIMEOUT_SECONDS` - Playwright MCP timeout (default: `30.0`)
@@ -173,11 +173,18 @@ call the ARN directly.
 ## MCP Tools
 
 When the FAQ tool prefix is configured, Bedrock Knowledge Base retrieval results
-are normalized from `text` to `body` and `resultCount` to `count`, retaining scores,
-locations, and metadata. These results may be incomplete document excerpts or
+are normalized from `retrievalResults[].content.text` to `body`, retaining scores,
+locations, and metadata. Non-text/empty passages are excluded, and `count` is the
+number of usable passages. The managed connector target controls `numberOfResults`;
+the agent sends only `retrievalQuery.text`, not the legacy five-result limit or a
+knowledge base ID. Configure retrieval settings in AWS. These results may be incomplete document excerpts or
 internal operational material. The existing FAQ relevance gate is unchanged;
 review knowledge-base content and calibrate its score threshold before enabling
 automatic requester-facing answers.
+
+The gateway handles IAM authentication to the managed Knowledge Base backend.
+This is separate from inbound gateway authentication: the current MCP client
+supports bearer headers, not IAM/SigV4-signed inbound requests.
 
 The agent's service layer calls these tools (the MCP adapter translates Jira
 tool names and routes calls to the configured server):
