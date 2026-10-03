@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
@@ -126,6 +127,51 @@ class TriageConfig:
         return cls(
             confidence_threshold=float(os.getenv("HELPDESK_AGENT_TRIAGE_CONFIDENCE_THRESHOLD", "0.6")),
             faq_relevance_threshold=float(os.getenv("HELPDESK_AGENT_FAQ_RELEVANCE_THRESHOLD", "0.7")),
+        )
+
+
+@dataclass
+class MemoryConfig:
+    """One organization's ticket memory, accessed using the AWS credential chain."""
+
+    enabled: bool = False
+    memory_id: str = ""
+    region: str = ""
+    organization_id: str = ""
+    history_events: int = 30
+    context_chars: int = 12000
+    similar_cases: int = 5
+    timeout_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.history_events <= 100:
+            raise ValueError("HELPDESK_AGENT_MEMORY_HISTORY_EVENTS must be between 1 and 100")
+        if not 1000 <= self.context_chars <= 50000:
+            raise ValueError("HELPDESK_AGENT_MEMORY_CONTEXT_CHARS must be between 1000 and 50000")
+        if not 1 <= self.similar_cases <= 10:
+            raise ValueError("HELPDESK_AGENT_MEMORY_SIMILAR_CASES must be between 1 and 10")
+        if self.timeout_seconds <= 0:
+            raise ValueError("HELPDESK_AGENT_MEMORY_TIMEOUT_SECONDS must be positive")
+        if self.enabled:
+            if not self.memory_id or not self.region:
+                raise ValueError("Enabled memory requires HELPDESK_AGENT_MEMORY_ID and HELPDESK_AGENT_MEMORY_REGION")
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", self.organization_id):
+                raise ValueError("HELPDESK_AGENT_MEMORY_ORGANIZATION_ID must be a lowercase ID without slashes")
+
+    @classmethod
+    def from_env(cls) -> "MemoryConfig":
+        enabled = os.getenv("HELPDESK_AGENT_MEMORY_ENABLED", "0")
+        if enabled not in ("0", "1"):
+            raise ValueError("HELPDESK_AGENT_MEMORY_ENABLED must be 0 or 1")
+        return cls(
+            enabled=enabled == "1",
+            memory_id=os.getenv("HELPDESK_AGENT_MEMORY_ID", "").strip(),
+            region=os.getenv("HELPDESK_AGENT_MEMORY_REGION", "").strip(),
+            organization_id=os.getenv("HELPDESK_AGENT_MEMORY_ORGANIZATION_ID", "").strip(),
+            history_events=int(os.getenv("HELPDESK_AGENT_MEMORY_HISTORY_EVENTS", "30")),
+            context_chars=int(os.getenv("HELPDESK_AGENT_MEMORY_CONTEXT_CHARS", "12000")),
+            similar_cases=int(os.getenv("HELPDESK_AGENT_MEMORY_SIMILAR_CASES", "5")),
+            timeout_seconds=float(os.getenv("HELPDESK_AGENT_MEMORY_TIMEOUT_SECONDS", "5.0")),
         )
 
 

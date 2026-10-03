@@ -113,6 +113,127 @@ outbound httpx calls (OpenAI SDK, MCP adapters). Use
 - `HELPDESK_AGENT_TRIAGE_CONFIDENCE_THRESHOLD` - Confidence threshold for clarification (default: `0.6`)
 - `HELPDESK_AGENT_FAQ_RELEVANCE_THRESHOLD` - FAQ relevance threshold (default: `0.7`)
 
+### AgentCore ticket memory
+
+Memory is opt-in (`HELPDESK_AGENT_MEMORY_ENABLED=0` by default). It uses the
+AWS SDK and the default AWS credential chain, not the FAQ MCP gateway or its
+authentication setting. The LLM provider does not need to change.
+
+Provision a resource explicitly; startup does not create AWS resources:
+
+```bash
+uv run helpdesk-memory-create --name HelpdeskMemory --region ap-southeast-2 --retention-days 90
+# Optional: --kms-key-arn <customer-managed-key-arn>
+```
+
+The command creates summary and semantic strategies and waits up to five
+minutes for activation. It prints the memory ID immediately, so an activation
+timeout can be investigated in the AWS console without creating another resource.
+The provisioning identity needs `bedrock-agentcore:CreateMemory` and
+`bedrock-agentcore:GetMemory`, plus any applicable KMS permissions.
+
+Then configure:
+
+```bash
+HELPDESK_AGENT_MEMORY_ENABLED=1
+HELPDESK_AGENT_MEMORY_ID=<memory-id-from-provisioning>
+HELPDESK_AGENT_MEMORY_REGION=ap-southeast-2
+HELPDESK_AGENT_MEMORY_ORGANIZATION_ID=your-organization
+```
+
+The runtime role needs `bedrock-agentcore:GetMemory` for fail-fast startup
+validation of activation and extraction namespaces, and `bedrock-agentcore:CreateEvent`,
+`bedrock-agentcore:ListEvents`, and `bedrock-agentcore:RetrieveMemoryRecords`
+on that memory ARN, plus any applicable customer-managed KMS permissions.
+Use least-privilege policies; no static AWS keys are required.
+
+The organization ID must be a lowercase identifier without slashes. A deployment
+serves **one trusted organization**, whose members are permitted to share case
+descriptions and troubleshooting. Namespace scoping is not user authentication:
+protect the email, chat, and A2A entry points with your existing trusted ingress
+and ticket-access controls. Do not expose conversation IDs as authorization
+tokens or deploy this configuration as a public multi-tenant helpdesk.
+
+**Short-term memory:** actor = configured organization; session = Jira ticket ID.
+For a new ticket, the original report is saved before its acknowledgment.
+For replies, the workflow retrieves recent ticket turns before storing the
+incoming message. Sent email responses are saved only after successful delivery;
+chat/A2A responses are saved when prepared for return. Raw turns use
+`extractionMode=SKIP`, so they are not automatically turned into shared insights.
+Chat/A2A conversation-to-ticket bindings are also persisted as non-extracted
+events, allowing follow-ups with the same conversation/context ID to reconnect
+after a process restart. Jira remains authoritative for status and the
+two-clarification limit; no LangGraph checkpoint is resumed.
+
+**Long-term memory:** completed helpdesk runs submit separate case snapshots:
+the report, existing Jira description and recent comment bodies, triage summary,
+clarification questions, browser diagnostic summaries, and suggested FAQ content.
+Summary and semantic strategies extract records asynchronously under:
+
+```text
+/org/{actorId}/tickets/{sessionId}/summary/
+/org/{actorId}/tickets/{sessionId}/facts/
+```
+
+Use these exact namespace templates if provisioning through the console.
+Retrieval searches only `/org/<organization-id>/tickets/`, excludes the current
+ticket, and combines records from each source ticket. Results feed triage and
+the diagnosis hand-off, and appear as `similar_cases` in chat response metadata
+and email workflow metadata. Historical reports and troubleshooting are labeled
+as unverified; an FAQ suggestion or escalation is **not** a confirmed resolution.
+Memory never replaces the authoritative FAQ gate or directly authorizes tools.
+Extraction may take a minute or more, so recent snapshots may not be searchable
+immediately. Existing tickets are learned when processed; there is no historical
+backfill. To learn later diagnosis/human troubleshooting and resolution comments,
+register `POST /webhooks/jira` as a Jira webhook for issue updates and comment
+creation/updates. The endpoint accepts Jira's `{"issue": {"key": "HELP-123"}}`
+envelope (other fields are ignored), validates the project, re-fetches Jira data,
+and submits a fresh snapshot. It requires memory and real Jira MCP to be enabled.
+Protect this endpoint at trusted ingress as well; it does not implement webhook
+authentication itself. Without the Jira webhook, later comments are learned only
+on the next ticket reply. Snapshots remain unverified observations even when Jira
+reports a resolution; the LLM must assess applicability rather than assume success.
+Duplicate update snapshots use content-based idempotency tokens. The endpoint
+returns `submitted` (not extraction-completed); failures return 4xx/5xx.
+For AgentCore Runtime deployments, `/invocations` accepts the same Jira envelope
+with `"path": "/webhooks/jira"`. The included Lambda/SAM bridge exposes a
+`JiraWebhookUrl` alongside the email URL. Configure its `WebhookSecret` and
+provide `x-webhook-secret` on trusted webhook requests (or use an authenticated
+upstream relay); do not leave internet-facing webhook ingress unauthenticated.
+
+Shared snapshots omit sender fields and comment author objects and redact email
+addresses, common credential assignments, bearer tokens, AWS access-key IDs,
+and private-key blocks. This is defense in depth, **not complete PII detection**.
+Approve your data-sharing policy before enabling memory; use upstream redaction
+for regulated or restricted ticket content. Raw ticket history can contain
+sensitive content and must be protected accordingly.
+
+Tuning (all optional):
+
+| Setting | Default | Behavior |
+|---|---|---|
+| `HELPDESK_AGENT_MEMORY_HISTORY_EVENTS` | `30` | Maximum recent events fetched (1–100); snapshots also occupy events |
+| `HELPDESK_AGENT_MEMORY_CONTEXT_CHARS` | `12000` | Character budget for ticket history and, separately, related-case context |
+| `HELPDESK_AGENT_MEMORY_SIMILAR_CASES` | `5` | Maximum distinct related tickets (1–10) |
+| `HELPDESK_AGENT_MEMORY_TIMEOUT_SECONDS` | `5.0` | AWS connection/read timeout, with at most two SDK attempts |
+
+AWS I/O runs off the async event loop. Memory failures are logged without
+request content and recorded in workflow history and `memory_errors` metadata;
+ticket processing continues using Jira when history/search/event writes fail.
+A chat binding read/write failure or unavailable linked Jira ticket fails the
+request rather than knowingly starting a new case. Event writes use stable
+idempotency tokens; this does not make the entire Jira/email workflow exactly-once.
+
+Raw event retention is set at provisioning (3–365 days). Expiring/deleting events
+does **not** delete extracted long-term records. The local conversation-delete
+endpoint does not delete shared ticket memory: use AgentCore event/record deletion
+APIs for an authorized purge, including derived records. Conversation-list/get
+endpoints and A2A task records remain process-local; persisted ticket history and
+bindings are independent of those UI/task stores.
+
+See the [AgentCore Memory guide](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory.html)
+and its [event extraction controls](https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_CreateEvent.html).
+
 ### MCP Integration
 
 - `HELPDESK_AGENT_USE_MCP` - Enable real MCP calls (default: `0`; services are mocked when disabled)
@@ -303,7 +424,9 @@ Request:
 - `GET /conversations` - List all conversations
 - `DELETE /conversations/{id}` - Delete conversation
 
-Chat conversations are stored in memory and are lost when the process restarts.
+The conversation API's transcripts are stored in process memory and are lost on
+restart. Optional AgentCore ticket history and chat-to-ticket bindings survive
+within their configured retention period (see AgentCore ticket memory above).
 Chat and A2A requests can also trigger an unread-mail lookup when the message
 contains both a mail-related term and a read/list/fetch-related term. Inbound
 email requests always go through normal triage.

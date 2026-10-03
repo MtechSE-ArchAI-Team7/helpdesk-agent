@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from .config import A2AConfig, LLMConfig, MCPConfig
+from .config import A2AConfig, LLMConfig, MCPConfig, MemoryConfig
 from .core.workflow import HelpdeskWorkflow
 from .mcp import MCPProxyAdapter
 from .modules.a2a.client import A2AClientManager
 from .modules.chat.service import ConversationStore
+from .modules.memory import AgentCoreMemory
 from .modules.triage.llm import LLMTriageClient
 
 
@@ -40,7 +41,15 @@ def get_llm_client() -> LLMTriageClient:
 
 def get_workflow() -> HelpdeskWorkflow:
     """Get workflow instance with optional MCP adapter and LLM client."""
-    return HelpdeskWorkflow(get_mcp_adapter(), get_llm_client(), a2a_client_manager=get_a2a_client_manager())
+    return HelpdeskWorkflow(
+        get_mcp_adapter(), get_llm_client(), a2a_client_manager=get_a2a_client_manager(), memory=get_memory()
+    )
+
+
+@lru_cache
+def get_memory() -> AgentCoreMemory | None:
+    config = MemoryConfig.from_env()
+    return AgentCoreMemory(config) if config.enabled else None
 
 
 @lru_cache

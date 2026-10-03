@@ -55,6 +55,9 @@ def _parse_body(event: dict[str, Any]) -> Any:
 def _session_id(payload: dict[str, Any]) -> str:
     """AgentCore requires a session id of at least 33 characters."""
     thread = payload.get("in_reply_to") or payload.get("message_id") or payload.get("messageId")
+    issue = payload.get("issue")
+    if isinstance(issue, dict) and isinstance(issue.get("key"), str):
+        return f"helpdesk-jira-{uuid.uuid5(uuid.NAMESPACE_URL, issue['key']).hex}"
     seed = str(thread) if thread else uuid.uuid4().hex
     return f"helpdesk-email-{uuid.uuid5(uuid.NAMESPACE_URL, seed).hex}"
 
@@ -94,8 +97,19 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return _response(400, {"error": "request body must be a JSON object"})
 
+    requested_path = event.get("rawPath") or event.get("path") or "/webhooks/email"
+    if requested_path.endswith("/webhooks/jira"):
+        path = "/webhooks/jira"
+        issue = payload.get("issue")
+        if not isinstance(issue, dict) or not isinstance(issue.get("key"), str) or not issue["key"]:
+            return _response(400, {"error": "Jira webhook requires issue.key"})
+    elif requested_path.endswith("/webhooks/email"):
+        path = "/webhooks/email"
+    else:
+        return _response(404, {"error": "unsupported webhook path"})
+
     # Zoho payloads are normalized server-side, so only validate the canonical shape.
-    if "fromAddress" not in payload:
+    if path == "/webhooks/email" and "fromAddress" not in payload:
         missing = [
             field
             for field, alias in REQUIRED_FIELDS.items()
@@ -111,7 +125,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             runtimeSessionId=_session_id(payload),
             contentType="application/json",
             accept="application/json",
-            payload=json.dumps({"path": "/webhooks/email", "payload": payload}).encode("utf-8"),
+            payload=json.dumps({"path": path, "payload": payload}).encode("utf-8"),
         )
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "InvokeFailed")
@@ -119,5 +133,5 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         status = 504 if code in {"ThrottlingException", "ServiceQuotaExceededException"} else 502
         return _response(status, {"error": "agent invocation failed", "detail": code})
 
-    logger.info("forwarded email webhook to AgentCore runtime")
+    logger.info("forwarded webhook path=%s to AgentCore runtime", path)
     return _response(200, _read_agent_response(result))

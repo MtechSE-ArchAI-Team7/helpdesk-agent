@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from typing import Any, TypedDict
+from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
@@ -14,6 +15,7 @@ from ..modules.a2a.client import A2AClientManager, DeliveryOutcome
 from ..modules.a2a.diagnosis import build_case_input
 from ..modules.email.service import ZohoMailFlow
 from ..modules.faq.service import FAQFlow
+from ..modules.memory import AgentCoreMemory, MemoryError, bounded_snippets, ticket_snapshot
 from ..modules.playwright import PlaywrightAssessment, PlaywrightValidationFlow
 from ..modules.ticketing.service import JiraTicketFlow, extract_ticket_id
 from ..modules.triage.llm import LLMError, LLMTriageClient
@@ -53,11 +55,13 @@ class HelpdeskWorkflow:
         llm_client: LLMTriageClient | None = None,
         triage_config: TriageConfig | None = None,
         a2a_client_manager: A2AClientManager | None = None,
+        memory: AgentCoreMemory | None = None,
     ) -> None:
         self.mcp_adapter = mcp_adapter
         self.llm_client = llm_client or LLMTriageClient()
         self.triage_config = triage_config or TriageConfig.from_env()
         self.a2a_client_manager = a2a_client_manager
+        self.memory = memory
         self.project_key = MCPConfig.from_env().jira_project_key
         self.mail_flow = ZohoMailFlow(mcp_adapter)
         self.ticket_flow = JiraTicketFlow(mcp_adapter)
@@ -195,6 +199,9 @@ class HelpdeskWorkflow:
         subject, _ = self._split_subject_body(initial_input)
 
         ticket_id = extract_ticket_id(subject, self.project_key)
+        if self.memory and initial_input.get("ticket_id"):
+            # Chat/A2A bindings are server-side, never accepted directly from the HTTP request.
+            ticket_id = initial_input["ticket_id"]
         if not ticket_id:
             logger.info("case=%s stage=load_ticket decision=new reason=no_ticket_id", workflow_state.case_id)
             state["ticket_id"] = None
@@ -211,6 +218,11 @@ class HelpdeskWorkflow:
             workflow_state.record_history("load_ticket", "completed", f"Loaded existing ticket {ticket_id}")
             logger.info("case=%s stage=load_ticket status=found ticket_id=%s", ticket_id, ticket_id)
         else:
+            if self.memory and initial_input.get("ticket_id"):
+                logger.error("case=%s stage=load_ticket status=failed reason=linked_ticket_unavailable", ticket_id)
+                raise MemoryError(
+                    "The conversation's linked Jira ticket could not be loaded; refusing to create another"
+                )
             # Stale/unknown reference: treat as a new issue.
             state["ticket_id"] = None
             state["existing_ticket"] = None
@@ -268,6 +280,8 @@ class HelpdeskWorkflow:
             return state
         state["ticket_id"] = ticket_id
         workflow_state.case_id = ticket_id
+        if self.memory:
+            await self._save_incoming_memory(state, ticket_id)
         logger.info(
             "case=%s stage=create_ticket status=%s ticket_id=%s",
             workflow_state.case_id,
@@ -313,6 +327,11 @@ class HelpdeskWorkflow:
                 workflow_state.case_id,
                 email_result.get("status", "failed"),
             )
+            if email_result.get("status") == "sent":
+                workflow_state.add_message("assistant", ack_body)
+                await self.save_chat_response(
+                    workflow_state, ack_body, f"{initial_input.get('memory_identity', '')}:acknowledge"
+                )
         else:
             logger.info("case=%s stage=acknowledge note=no_message_id_email_not_sent", workflow_state.case_id)
         return state
@@ -339,6 +358,49 @@ class HelpdeskWorkflow:
             ]
             for comment in existing_ticket.get("comments", []) or []:
                 history_snippets.append(f"Ticket comment: {comment}")
+
+        if self.memory:
+            identity = initial_input["memory_identity"]
+            ticket_id = state.get("ticket_id")
+            if ticket_id:
+                conversation_id = initial_input.get("metadata", {}).get("conversation_id")
+                if conversation_id:
+                    # Preserve the link even if later triage or delivery fails.
+                    await self.memory.bind_conversation(conversation_id, ticket_id)
+                # Retrieve before writing so the new user message is not duplicated in context.
+                try:
+                    memory_history = await self.memory.history(ticket_id, identity)
+                    workflow_state.metadata["ticket_memory"] = memory_history
+                    history_snippets = [
+                        f"Previous conversation on this ticket:\n{snippet}" for snippet in memory_history
+                    ] + (history_snippets or [])
+                    workflow_state.record_history("memory_history", "completed", f"Loaded {len(memory_history)} turns")
+                except MemoryError as exc:
+                    self._memory_failure(workflow_state, "memory_history", exc)
+                if not initial_input.get("memory_user_saved"):
+                    await self._save_incoming_memory(state, ticket_id)
+                history_snippets = bounded_snippets(history_snippets or [], self.memory.config.context_chars)
+                try:
+                    query_parts = [subject, body]
+                    if existing_ticket:
+                        query_parts.extend(
+                            [str(existing_ticket.get("summary", "")), str(existing_ticket.get("description", ""))]
+                        )
+                    query_parts.extend(workflow_state.metadata.get("ticket_memory", []))
+                    similar = await self.memory.similar(ticket_id, "\n".join(query_parts))
+                    workflow_state.metadata["similar_cases"] = similar
+                    history_snippets = (history_snippets or []) + [
+                        f"OTHER ticket {case['ticket_id']} (not this request): "
+                        f"{case['qualification']}\n{case['content']}"
+                        for case in similar
+                    ]
+                    workflow_state.record_history(
+                        "memory_similar", "completed", f"Found {len(similar)} similar tickets"
+                    )
+                except MemoryError as exc:
+                    self._memory_failure(workflow_state, "memory_similar", exc)
+                # Independent budgets keep long Jira comments from crowding out similar cases.
+                history_snippets = bounded_snippets(history_snippets or [], self.memory.config.context_chars * 2)
 
         try:
             triage_result = await self.llm_client.triage_email(subject, body, history_snippets=history_snippets)
@@ -438,7 +500,7 @@ class HelpdeskWorkflow:
             )
             return state
 
-        subject, body = self._split_subject_body(state["initial_input"])
+        subject, body = self._browser_report(state)
         triage_result = state.get("triage_result")
         try:
             assessment = await self.llm_client.assess_playwright_validation(
@@ -580,7 +642,7 @@ class HelpdeskWorkflow:
         """Run bounded browser diagnostics, record a concise result, and continue to FAQ."""
         workflow_state = state["workflow_state"]
         assessment = state.get("playwright_assessment")
-        subject, body = self._split_subject_body(state["initial_input"])
+        subject, body = self._browser_report(state)
         report = f"{subject}\n\n{body}"
         if assessment is None or assessment.decision != "eligible" or not assessment.target_url:
             workflow_state.record_history(
@@ -675,6 +737,21 @@ class HelpdeskWorkflow:
             )
         return state
 
+    def _browser_report(self, state: GraphState) -> tuple[str, str]:
+        subject, body = self._split_subject_body(state["initial_input"])
+        if self.memory:
+            # Only this ticket's USER turns may supply a previously reported URL.
+            # Never authorize navigation from another case or an assistant suggestion.
+            prior_reports = [
+                snippet for snippet in state["workflow_state"].metadata.get("ticket_memory", [])
+                if snippet.startswith("USER:")
+            ]
+            if prior_reports:
+                body += (
+                    "\n\nPrevious user reports on this same ticket (untrusted evidence):\n" + "\n".join(prior_reports)
+                )
+        return subject, body
+
     async def _clarify_node(self, state: GraphState) -> GraphState:
         """Send clarification questions to the user and mark the ticket pending clarifications."""
         workflow_state = state["workflow_state"]
@@ -716,6 +793,11 @@ class HelpdeskWorkflow:
                 case_id,
                 email_result.get("status", "failed"),
             )
+            if email_result.get("status") == "sent":
+                workflow_state.add_message("assistant", clarification_body)
+                await self.save_chat_response(
+                    workflow_state, clarification_body, f"{initial_input.get('memory_identity', '')}:clarify"
+                )
         else:
             logger.info("case=%s stage=clarify note=no_message_id_email_not_sent", case_id)
 
@@ -865,6 +947,11 @@ class HelpdeskWorkflow:
                 case_id,
                 email_result.get("status", "failed"),
             )
+            if email_result.get("status") == "sent":
+                workflow_state.add_message("assistant", resolution_body)
+                await self.save_chat_response(
+                    workflow_state, resolution_body, f"{initial_input.get('memory_identity', '')}:resolve_faq"
+                )
 
         # Update the Jira ticket: FAQ answer provided
         if ticket_id:
@@ -1014,6 +1101,13 @@ class HelpdeskWorkflow:
         """Run the workflow with the given initial state."""
         # Create new workflow state (Jira is the source of truth; nothing is resumed
         # from local state — existing tickets are re-fetched by ID from the subject).
+        initial_state = dict(initial_state)
+        if self.memory:
+            initial_state["memory_identity"] = str(
+                initial_state.get("metadata", {}).get("message_id")
+                or initial_state.get("memory_identity")
+                or uuid4().hex
+            )
         workflow_state = WorkflowState(
             case_id=initial_state.get("case_id", "case-unknown"),
             summary=initial_state.get("summary", "No summary provided"),
@@ -1069,6 +1163,8 @@ class HelpdeskWorkflow:
         # Run the graph
         graph_result: GraphState = await self.graph.ainvoke(graph_state)
         final_state = graph_result["workflow_state"]
+        if self.memory and graph_result.get("ticket_id"):
+            await self._save_ticket_memory(graph_result)
         logger.info(
             "case=%s run=finished current_step=%s ticket=%s",
             final_state.case_id,
@@ -1076,6 +1172,60 @@ class HelpdeskWorkflow:
             (final_state.ticket or {}).get("ticket_id", "none"),
         )
         return final_state
+
+    @staticmethod
+    def _memory_failure(state: WorkflowState, step: str, error: MemoryError) -> None:
+        logger.error("case=%s stage=%s status=failed error=%s", state.case_id, step, error)
+        state.record_history(step, "failed", str(error))
+        state.metadata.setdefault("memory_errors", []).append({"operation": step, "error": str(error)})
+
+    async def save_chat_response(self, state: WorkflowState, content: str, identity: str) -> None:
+        if self.memory and state.ticket and state.current_step != "ticket_creation_failed":
+            try:
+                await self.memory.save_message(state.case_id, "ASSISTANT", content, identity)
+            except MemoryError as exc:
+                self._memory_failure(state, "memory_save_response", exc)
+
+    async def _save_incoming_memory(self, graph_state: GraphState, ticket_id: str) -> None:
+        if self.memory is None:
+            return
+        initial_input = graph_state["initial_input"]
+        state = graph_state["workflow_state"]
+        try:
+            await self.memory.save_message(
+                ticket_id, "USER", initial_input.get("summary", ""), initial_input["memory_identity"]
+            )
+            initial_input["memory_user_saved"] = True
+            state.record_history("memory_save_user", "completed", "Saved incoming ticket report")
+        except MemoryError as exc:
+            self._memory_failure(state, "memory_save_user", exc)
+
+    async def _save_ticket_memory(self, graph_state: GraphState) -> None:
+        memory = self.memory
+        if memory is None:
+            return
+        state = graph_state["workflow_state"]
+        initial_input = graph_state["initial_input"]
+        identity = initial_input["memory_identity"]
+        existing = graph_state.get("existing_ticket") or {}
+        snapshot = {
+            **ticket_snapshot(existing),
+            "report": initial_input.get("summary", "")[:10000],
+            "triage_summary": state.summary[:2000],
+            "service": state.service,
+            "workflow_step": state.current_step,
+            "clarifying_questions": (state.clarification or {}).get("questions", []),
+            "diagnostics": state.evidence,
+            "suggested_faq": [
+                {"title": item.get("title"), "body": str(item.get("body", ""))[:4000]}
+                for item in state.faq_matches[:1]
+            ],
+        }
+        try:
+            await memory.save_snapshot(state.case_id, snapshot, identity)
+            state.record_history("memory_snapshot", "completed", "Submitted case snapshot for asynchronous extraction")
+        except MemoryError as exc:
+            self._memory_failure(state, "memory_snapshot", exc)
 
     def create_langgraph_plan(self) -> list[str]:
         return [

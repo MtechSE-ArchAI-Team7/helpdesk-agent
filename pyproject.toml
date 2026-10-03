@@ -9,7 +9,7 @@ dependencies = [
   "a2a-sdk>=0.3.0,<0.4",
   # Only exercised when a remote agent is configured with an AgentCore runtime
   # ARN (imported lazily); required in the deployed image.
-  "boto3>=1.35.0",
+  "boto3>=1.43.97",
   "fastapi>=0.116.0",
   "fastmcp>=3.4.7",
   "langgraph>=0.2.0",
@@ -51,6 +51,7 @@ dev = [
 
 [project.scripts]
 helpdesk-agent = "helpdesk_agent.main:main"
+helpdesk-memory-create = "helpdesk_agent.memory_setup:main"
 
 [build-system]
 requires = ["hatchling"]

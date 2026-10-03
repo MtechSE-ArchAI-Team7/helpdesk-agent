@@ -18,6 +18,8 @@ from .modules.chat.router import router as chat_router
 from .modules.email.router import email_webhook
 from .modules.email.router import router as email_router
 from .modules.email.schema import EmailWebhook
+from .modules.ticketing.router import JiraMemoryWebhook, jira_memory_webhook
+from .modules.ticketing.router import router as ticketing_router
 from .observability import setup_observability
 
 
@@ -59,14 +61,17 @@ def create_app() -> FastAPI:
         workflow: Annotated[HelpdeskWorkflow, Depends(get_workflow)],
     ) -> dict[str, Any]:
         path = body.get("path", "/webhooks/email")
+        payload = body.get("payload", body)
+        if path == "/webhooks/jira":
+            return await jira_memory_webhook(JiraMemoryWebhook.model_validate(payload), workflow)
         if path != "/webhooks/email":
             raise HTTPException(status_code=404, detail=f"unsupported path: {path}")
-        payload = body.get("payload", body)
         return await email_webhook(EmailWebhook.model_validate(payload), workflow)
 
     # Include module routers
     app.include_router(email_router)
     app.include_router(chat_router)
+    app.include_router(ticketing_router)
 
     # Mount the A2A (Agent2Agent) interface: Agent Card at
     # /.well-known/agent-card.json and JSON-RPC message/send at /a2a.

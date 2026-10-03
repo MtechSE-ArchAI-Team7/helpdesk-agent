@@ -135,6 +135,8 @@ class JiraTicketFlow:
             "description": content.get("description", ""),
             "priority": content.get("priority", ""),
             "comments": content.get("comments", []),
+            "issue_status": content.get("status"),
+            "resolution": content.get("resolution"),
         }
 
     async def add_comment(self, ticket_id: str, body: str) -> dict[str, Any]:

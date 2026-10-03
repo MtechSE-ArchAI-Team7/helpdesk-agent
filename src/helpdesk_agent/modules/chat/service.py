@@ -99,6 +99,11 @@ async def handle_chat_message(
     which is how multi-turn clarification flows resume.
     """
     conv = conversation_store.get_or_create(conversation_id)
+    identity = uuid4().hex
+    linked_ticket: str | None = None
+    if workflow.memory:
+        # Resolve before running: a failed read must not create a duplicate Jira ticket.
+        linked_ticket = await workflow.memory.conversation_ticket(conv.conversation_id)
     conv.add_user_message(message)
 
     # Process the user message through the workflow
@@ -109,12 +114,13 @@ async def handle_chat_message(
             "summary": message,
             "source": source,
             "sender": sender,
+            "ticket_id": linked_ticket,
+            "memory_identity": identity,
             "metadata": {
                 "conversation_id": conv.conversation_id,
             },
         }
     )
-
     # Format agent response
     if state.current_step == "email_retrieved":
         email_messages = state.metadata.get("email_messages", [])
@@ -151,6 +157,7 @@ async def handle_chat_message(
         if state.current_step == "diagnosis_required":
             agent_response += "Your ticket has been escalated for diagnosis by the support team."
 
+    await workflow.save_chat_response(state, agent_response, identity)
     conv.add_agent_message(agent_response, {"case_id": state.case_id, "state": state.to_dict()})
 
     return ChatResponse(
@@ -161,5 +168,13 @@ async def handle_chat_message(
             "current_step": state.current_step,
             "ticket_id": state.ticket.get("ticket_id") if state.ticket else None,
             "clarifying_questions": (state.clarification or {}).get("questions", []),
+            **(
+                {
+                    "similar_cases": state.metadata.get("similar_cases", []),
+                    "memory_errors": state.metadata.get("memory_errors", []),
+                }
+                if workflow.memory
+                else {}
+            ),
         },
     )

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: API Gateway -> Lambda -> helpdesk agent email webhook on Bedrock AgentCore
+Description: API Gateway -> Lambda -> helpdesk agent email and Jira webhooks on Bedrock AgentCore
 
 Parameters:
   AgentRuntimeArn:
@@ -53,8 +53,17 @@ Resources:
             ApiId: !Ref EmailWebhookApi
             Path: /webhooks/email
             Method: POST
+        JiraWebhook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref EmailWebhookApi
+            Path: /webhooks/jira
+            Method: POST
 
 Outputs:
   WebhookUrl:
     Description: Endpoint to configure in your email provider
     Value: !Sub "https://${EmailWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/prod/webhooks/email"
+  JiraWebhookUrl:
+    Description: Endpoint to configure in Jira for memory updates
+    Value: !Sub "https://${EmailWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/prod/webhooks/jira"

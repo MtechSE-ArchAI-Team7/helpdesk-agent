@@ -10,6 +10,7 @@ os.environ["HELPDESK_AGENT_LLM_API_KEY"] = "test-api-key"
 # Default to MCP disabled so webhook/chat tests get mocked flows unless a
 # test explicitly enables it (e.g. test_mcp.py sets it before importing).
 os.environ.setdefault("HELPDESK_AGENT_USE_MCP", "0")
+os.environ["HELPDESK_AGENT_MEMORY_ENABLED"] = "0"
 
 
 @pytest.fixture(autouse=True)
@@ -21,11 +22,13 @@ def _reset_dependency_caches():
     dependencies.get_mcp_adapter.cache_clear()
     dependencies.get_a2a_config.cache_clear()
     dependencies.get_a2a_client_manager.cache_clear()
+    dependencies.get_memory.cache_clear()
     yield
     dependencies.get_mcp_config.cache_clear()
     dependencies.get_mcp_adapter.cache_clear()
     dependencies.get_a2a_config.cache_clear()
     dependencies.get_a2a_client_manager.cache_clear()
+    dependencies.get_memory.cache_clear()
 
 
 @pytest.fixture
