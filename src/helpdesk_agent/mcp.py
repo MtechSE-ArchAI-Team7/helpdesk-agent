@@ -229,6 +229,13 @@ class MCPProxyAdapter:
             url = self._resolve_url(tool_name)
             tool_name = self._translate_playwright_call(tool_name)
             tool_arguments = base_arguments
+        elif tool_name == "faq.search" and self.config.faq_tool_prefix is not None:
+            url = self._resolve_url(tool_name)
+            tool_name = f"{self.config.faq_tool_prefix}search_ops_knowledge"
+            tool_arguments = {
+                "query": base_arguments["query"],
+                "numberOfResults": base_arguments.get("max_results", 5),
+            }
         else:
             url = self._resolve_url(tool_name)
             # Preserve the legacy extra params the mock/proxy servers expect by

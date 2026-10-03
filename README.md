@@ -120,6 +120,7 @@ outbound httpx calls (OpenAI SDK, MCP adapters). Use
 - `HELPDESK_AGENT_MCP_ATLASSIAN_URL` - Optional dedicated Jira/Atlassian MCP endpoint
 - `HELPDESK_AGENT_MCP_ZOHOMAIL_URL` - Optional dedicated Zoho Mail MCP endpoint
 - `HELPDESK_AGENT_MCP_FAQ_URL` - Optional dedicated FAQ MCP endpoint
+- `HELPDESK_AGENT_MCP_FAQ_TOOL_PREFIX` - Optional knowledge-search gateway target prefix, e.g. `ops-knowledge___`; when set, calls `<prefix>search_ops_knowledge` with `query` and `numberOfResults`. Unset retains legacy `faq.search`; empty uses the unprefixed Lambda tool name.
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_URL` - Hosted Playwright MCP runtime endpoint
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_TOOL_PREFIX` - AgentCore Gateway target namespace prefix (default: `mcp-playwright___`; set empty for direct MCP server access)
 - `HELPDESK_AGENT_MCP_PLAYWRIGHT_TIMEOUT_SECONDS` - Playwright MCP timeout (default: `30.0`)
@@ -170,6 +171,13 @@ card discovery for Agent 2 — its deployed card advertises a localhost URL;
 call the ARN directly.
 
 ## MCP Tools
+
+When the FAQ tool prefix is configured, Bedrock Knowledge Base retrieval results
+are normalized from `text` to `body` and `resultCount` to `count`, retaining scores,
+locations, and metadata. These results may be incomplete document excerpts or
+internal operational material. The existing FAQ relevance gate is unchanged;
+review knowledge-base content and calibrate its score threshold before enabling
+automatic requester-facing answers.
 
 The agent's service layer calls these tools (the MCP adapter translates Jira
 tool names and routes calls to the configured server):

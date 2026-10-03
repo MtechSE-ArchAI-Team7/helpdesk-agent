@@ -28,6 +28,7 @@ class MCPConfig:
     # Optional URL of the FAQ MCP server. When set, faq.* tools are routed
     # there instead of base_url.
     faq_url: str | None = None
+    faq_tool_prefix: str | None = None
     # Optional URL of the hosted Playwright MCP runtime.
     playwright_url: str | None = None
     playwright_timeout_seconds: float = 30.0
@@ -57,6 +58,7 @@ class MCPConfig:
             zohomail_tool_prefix=os.getenv("HELPDESK_AGENT_MCP_ZOHOMAIL_TOOL_PREFIX", "ZohoMail_"),
             zohomail_from_address=os.getenv("HELPDESK_AGENT_ZOHOMAIL_FROM_ADDRESS") or None,
             faq_url=os.getenv("HELPDESK_AGENT_MCP_FAQ_URL") or None,
+            faq_tool_prefix=os.getenv("HELPDESK_AGENT_MCP_FAQ_TOOL_PREFIX"),
             playwright_url=os.getenv("HELPDESK_AGENT_MCP_PLAYWRIGHT_URL") or None,
             playwright_timeout_seconds=float(os.getenv("HELPDESK_AGENT_MCP_PLAYWRIGHT_TIMEOUT_SECONDS", "30.0")),
             playwright_allowed_hosts=[

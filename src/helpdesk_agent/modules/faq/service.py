@@ -36,9 +36,20 @@ class FAQFlow:
         if response.status != "completed":
             return {"status": "failed", "action_id": response.action_id, "error": response.error}
 
+        results = response.content.get("results", [])
+        if self.mcp_adapter.config.faq_tool_prefix is not None:
+            results = [
+                {
+                    **item,
+                    "title": (item.get("metadata") or {}).get("title", "Operational knowledge excerpt"),
+                    "body": item.get("text", ""),
+                }
+                for item in results
+            ]
+
         return {
             "status": "success",
-            "results": response.content.get("results", []),
-            "count": response.content.get("count", 0),
+            "results": results,
+            "count": response.content.get("resultCount", response.content.get("count", len(results))),
             "action_id": response.action_id,
         }

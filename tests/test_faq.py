@@ -1,5 +1,9 @@
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
 import pytest
 
+from helpdesk_agent.config import MCPConfig
 from helpdesk_agent.mcp import MCPProxyAdapter
 from helpdesk_agent.mock_mcp_server import MockMCPServer
 from helpdesk_agent.modules.faq.service import FAQFlow
@@ -35,3 +39,52 @@ async def test_faq_search_with_mcp(mock_server) -> None:
     assert len(result["results"]) == 2
     assert result["results"][0]["title"] == "How to reset your password"
     assert result["results"][0]["score"] == 0.95
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_results(monkeypatch) -> None:
+    calls = []
+    payload = {
+        "resultCount": 1,
+        "results": [{
+            "text": "Approved troubleshooting steps",
+            "score": 0.85,
+            "metadata": {"title": "Checkout errors"},
+            "location": {"s3Location": {"uri": "s3://knowledge/runbook.txt"}},
+        }],
+    }
+
+    @asynccontextmanager
+    async def fake_transport(*args, **kwargs):
+        assert args[0] == "https://gateway.example/mcp"
+        yield object(), object(), None
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            return SimpleNamespace(isError=False, content=[], structuredContent=payload)
+
+    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_transport)
+    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
+    adapter = MCPProxyAdapter(MCPConfig(
+        faq_url="https://gateway.example/mcp", faq_tool_prefix="ops-knowledge___",
+    ))
+
+    result = await FAQFlow(adapter).search("Checkout returns HTTP 500", max_results=3)
+
+    assert calls == [("ops-knowledge___search_ops_knowledge", {
+        "query": "Checkout returns HTTP 500", "numberOfResults": 3,
+    })]
+    assert result["count"] == 1
+    assert result["results"][0]["body"] == "Approved troubleshooting steps"
+    assert result["results"][0]["title"] == "Checkout errors"
+    assert result["results"][0]["location"] == payload["results"][0]["location"]
