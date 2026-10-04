@@ -98,12 +98,6 @@ jobs:
           args: >-
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
-            -Dsonar.sources=src,scripts
-            -Dsonar.tests=tests,evaluations
-            -Dsonar.python.version=3.12
-            -Dsonar.python.coverage.reportPaths=reports/coverage.xml
-            -Dsonar.exclusions=**/__pycache__/**
-            -Dsonar.qualitygate.wait=false
 
       - name: Set up Node for Snyk
         id: node
