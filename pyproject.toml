@@ -12,6 +12,7 @@ dependencies = [
   "boto3>=1.43.97",
   "fastapi>=0.116.0",
   "fastmcp>=3.4.7",
+  "langfuse>=4.0,<5",
   "langgraph>=0.2.0",
   "mcp>=1.10.0",
   "openai>=1.0.0",

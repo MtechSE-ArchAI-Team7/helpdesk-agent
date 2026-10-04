@@ -21,18 +21,96 @@ Instrumented surfaces:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any
 
 from fastapi import FastAPI
+from langfuse import Langfuse
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
+from opentelemetry.trace import SpanKind, Status, StatusCode
+
+from .config import LangfuseConfig
 
 logger = logging.getLogger(__name__)
 
 _configured = False
+_langfuse_client: Langfuse | None = None
+_session_id: ContextVar[str | None] = ContextVar("helpdesk_trace_session", default=None)
+
+
+def _should_export_span(span: ReadableSpan) -> bool:
+    attributes = span.attributes or {}
+    path = str(attributes.get("url.path", attributes.get("http.target", "")))
+    if path.split("?")[0] in ("/healthz", "/ping"):
+        return False
+    scope = span.instrumentation_scope
+    return bool(
+        (scope and scope.name == "helpdesk_agent")
+        or (
+            span.kind == SpanKind.SERVER
+            and scope
+            and scope.name in ("opentelemetry.instrumentation.asgi", "opentelemetry.instrumentation.fastapi")
+        )
+        or (scope and scope.name == "langfuse-sdk")
+    )
+
+
+def flush_observability() -> None:
+    provider = trace.get_tracer_provider()
+    if isinstance(provider, TracerProvider):
+        provider.force_flush(timeout_millis=5000)
+
+
+def capture_content(span: trace.Span, direction: str, value: Any) -> None:
+    if _langfuse_client is not None and span.is_recording():
+        span.set_attribute(f"langfuse.observation.{direction}", json.dumps(value, default=str))
+
+
+@contextmanager
+def operation_span(name: str, session_id: str | None = None) -> Iterator[trace.Span]:
+    token = _session_id.set(session_id or _session_id.get())
+    try:
+        with get_tracer().start_as_current_span(
+            name, record_exception=False, set_status_on_exception=False
+        ) as span:
+            if _session_id.get():
+                span.set_attribute("langfuse.session.id", str(_session_id.get()))
+            try:
+                yield span
+            except Exception as exc:
+                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                raise
+    finally:
+        _session_id.reset(token)
+
+
+@contextmanager
+def generation(name: str, model: str, messages: Any) -> Iterator[trace.Span]:
+    with operation_span(name) as span:
+        span.set_attribute("langfuse.observation.type", "generation")
+        span.set_attribute("gen_ai.request.model", model)
+        span.set_attribute("gen_ai.request.temperature", 0.1)
+        span.set_attribute("langfuse.observation.model.parameters", json.dumps({"response_format": "json_object"}))
+        capture_content(span, "input", messages)
+        yield span
+
+
+def record_generation_response(span: trace.Span, response: Any) -> None:
+    capture_content(span, "output", response.choices[0].message.content)
+    usage = response.usage
+    if usage is not None:
+        span.set_attribute("gen_ai.usage.input_tokens", usage.prompt_tokens)
+        span.set_attribute("gen_ai.usage.output_tokens", usage.completion_tokens)
+    if response.model:
+        span.set_attribute("gen_ai.response.model", response.model)
 
 
 def setup_observability(app: FastAPI) -> None:
@@ -41,7 +119,7 @@ def setup_observability(app: FastAPI) -> None:
     Safe to call for every create_app() invocation; the global tracer
     provider is only installed on the first call.
     """
-    global _configured
+    global _configured, _langfuse_client
 
     if not _configured:
         resource = Resource.create(
@@ -52,7 +130,29 @@ def setup_observability(app: FastAPI) -> None:
         )
         provider = TracerProvider(resource=resource)
 
-        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+        try:
+            config = LangfuseConfig.from_env()
+            if config.enabled:
+                destinations = (
+                    os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+                    os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", ""),
+                )
+                if any(destination.startswith(config.base_url + "/api/public/otel") for destination in destinations):
+                    raise ValueError("Duplicate Langfuse export destination")
+                _langfuse_client = Langfuse(
+                    public_key=config.public_key,
+                    secret_key=config.secret_key,
+                    base_url=config.base_url,
+                    tracer_provider=provider,
+                    should_export_span=_should_export_span,
+                    timeout=5,
+                )
+                logger.info("Langfuse tracing enabled")
+        except Exception:  # noqa: BLE001
+            _langfuse_client = None
+            logger.warning("Langfuse initialization failed; continuing without Langfuse")
+
+        endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
         if endpoint:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 

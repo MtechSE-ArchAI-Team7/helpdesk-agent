@@ -4,8 +4,10 @@ import json
 from typing import Any
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 from ...config import LLMConfig
+from ...observability import generation, record_generation_response
 from ..playwright import PlaywrightAssessment, PlaywrightEvaluation
 from .schema import TriageResult
 
@@ -31,6 +33,25 @@ class LLMTriageClient:
             base_url=self.config.base_url,
             timeout=self.config.timeout_seconds,
         )
+
+    async def _complete_json(
+        self, name: str, messages: list[ChatCompletionMessageParam], empty_message: str
+    ) -> dict[str, Any]:
+        with generation(name, self.config.model, messages) as span:
+            response = await self.client.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            )
+            record_generation_response(span, response)
+            content = response.choices[0].message.content
+            if not content:
+                raise LLMError(empty_message)
+            data = json.loads(content)
+            if not isinstance(data, dict):
+                raise LLMError("LLM returned a non-object JSON response")
+            return data
 
     async def triage_email(
         self,
@@ -79,8 +100,8 @@ Respond with a JSON object containing:
 Only respond with valid JSON, no additional text."""
 
         try:
-            response = await self.client.chat.completions.create(
-                model=self.config.model,
+            data = await self._complete_json(
+                "llm.triage_email",
                 messages=[
                     {
                         "role": "system",
@@ -95,15 +116,8 @@ Only respond with valid JSON, no additional text."""
                     },
                     {"role": "user", "content": prompt},
                 ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
+                empty_message="LLM returned empty response",
             )
-
-            content = response.choices[0].message.content
-            if not content:
-                raise LLMError("LLM returned empty response")
-
-            data = json.loads(content)
 
             return TriageResult(
                 service=data.get("service", "unknown"),
@@ -156,8 +170,8 @@ Return only JSON with these fields:
 - missing_info: array of missing details, if needed"""
 
         try:
-            response = await self.client.chat.completions.create(
-                model=self.config.model,
+            data = await self._complete_json(
+                "llm.assess_playwright_validation",
                 messages=[
                     {
                         "role": "system",
@@ -169,13 +183,9 @@ Return only JSON with these fields:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
+                empty_message="LLM returned empty Playwright assessment",
             )
-            content = response.choices[0].message.content
-            if not content:
-                raise LLMError("LLM returned empty Playwright assessment")
-            return PlaywrightAssessment.model_validate(json.loads(content))
+            return PlaywrightAssessment.model_validate(data)
         except json.JSONDecodeError as exc:
             raise LLMError(f"LLM returned invalid Playwright assessment JSON: {exc}") from exc
         except Exception as exc:
@@ -202,8 +212,8 @@ Return only JSON with:
 - summary: concise evidence-based explanation; do not claim more than the observations show"""
 
         try:
-            response = await self.client.chat.completions.create(
-                model=self.config.model,
+            data = await self._complete_json(
+                "llm.evaluate_playwright_validation",
                 messages=[
                     {
                         "role": "system",
@@ -211,13 +221,9 @@ Return only JSON with:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
+                empty_message="LLM returned empty Playwright evaluation",
             )
-            content = response.choices[0].message.content
-            if not content:
-                raise LLMError("LLM returned empty Playwright evaluation")
-            return PlaywrightEvaluation.model_validate(json.loads(content))
+            return PlaywrightEvaluation.model_validate(data)
         except json.JSONDecodeError as exc:
             raise LLMError(f"LLM returned invalid Playwright evaluation JSON: {exc}") from exc
         except Exception as exc:

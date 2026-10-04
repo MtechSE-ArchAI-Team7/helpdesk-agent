@@ -10,6 +10,43 @@ load_dotenv()
 
 
 @dataclass
+class LangfuseConfig:
+    enabled: bool = False
+    base_url: str = "https://cloud.langfuse.com"
+    public_key: str | None = field(default=None, repr=False)
+    secret_key: str | None = field(default=None, repr=False)
+
+    @classmethod
+    def from_env(cls) -> "LangfuseConfig":
+        enabled = os.getenv("HELPDESK_AGENT_LANGFUSE_ENABLED", "").lower() in ("1", "true", "yes")
+        config = cls(
+            enabled=enabled,
+            base_url=os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com").rstrip("/"),
+            public_key=os.getenv("LANGFUSE_PUBLIC_KEY") or None,
+            secret_key=os.getenv("LANGFUSE_SECRET_KEY") or None,
+        )
+        if not enabled:
+            return config
+        secret_id = os.getenv("HELPDESK_AGENT_LANGFUSE_SECRET_ARN")
+        if secret_id and (not config.public_key or not config.secret_key):
+            import boto3
+
+            client = boto3.client(
+                "secretsmanager", region_name=os.getenv("HELPDESK_AGENT_LANGFUSE_SECRET_REGION") or None
+            )
+            credentials = json.loads(client.get_secret_value(SecretId=secret_id)["SecretString"])
+            if not isinstance(credentials, dict):
+                raise ValueError("Langfuse secret must be a JSON object")
+            config.public_key = config.public_key or credentials.get("public_key")
+            config.secret_key = config.secret_key or credentials.get("secret_key")
+        if not all(isinstance(value, str) and value.strip() for value in (config.public_key, config.secret_key)):
+            raise ValueError("Langfuse requires public and secret keys")
+        if not config.base_url.startswith("https://"):
+            raise ValueError("Langfuse Cloud requires an HTTPS base URL")
+        return config
+
+
+@dataclass
 class MCPConfig:
     base_url: str = "http://127.0.0.1:8765/mcp"
     timeout_seconds: float = 5.0

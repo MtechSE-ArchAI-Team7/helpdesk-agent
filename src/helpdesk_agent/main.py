@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 import uvicorn
@@ -20,7 +23,13 @@ from .modules.email.router import router as email_router
 from .modules.email.schema import EmailWebhook
 from .modules.ticketing.router import JiraMemoryWebhook, jira_memory_webhook
 from .modules.ticketing.router import router as ticketing_router
-from .observability import setup_observability
+from .observability import flush_observability, setup_observability
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    yield
+    await asyncio.to_thread(flush_observability)
 
 
 def create_app() -> FastAPI:
@@ -39,7 +48,8 @@ def create_app() -> FastAPI:
             "HELPDESK_AGENT_LLM_API_KEY environment variable is required. Set it to your Bedrock gateway auth token or OpenAI API key."
         )
 
-    app = FastAPI(title="Helpdesk Agent")
+    app = FastAPI(title="Helpdesk Agent", lifespan=_lifespan)
+    setup_observability(app)
 
     # Health endpoints
     @app.get("/")
@@ -84,9 +94,6 @@ def create_app() -> FastAPI:
         agent_card=build_agent_card(get_a2a_config()),
         http_handler=a2a_request_handler,
     ).add_routes_to_app(app, rpc_url=A2A_RPC_PATH)
-
-    # OpenTelemetry tracing
-    setup_observability(app)
 
     return app
 

@@ -1,8 +1,54 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from helpdesk_agent.config import LLMConfig, MCPConfig, TriageConfig
+from helpdesk_agent.config import LangfuseConfig, LLMConfig, MCPConfig, TriageConfig
+
+
+class TestLangfuseConfig(unittest.TestCase):
+    def test_disabled_does_not_resolve_secrets(self) -> None:
+        with patch.dict(os.environ, {"HELPDESK_AGENT_LANGFUSE_SECRET_ARN": "secret-id"}, clear=True):
+            with patch("boto3.client") as client:
+                config = LangfuseConfig.from_env()
+        self.assertFalse(config.enabled)
+        client.assert_not_called()
+
+    def test_explicit_keys_win_and_are_not_in_repr(self) -> None:
+        environment = {
+            "HELPDESK_AGENT_LANGFUSE_ENABLED": "true",
+            "LANGFUSE_PUBLIC_KEY": "public-test",
+            "LANGFUSE_SECRET_KEY": "private-test",
+            "HELPDESK_AGENT_LANGFUSE_SECRET_ARN": "secret-id",
+        }
+        with patch.dict(os.environ, environment, clear=True), patch("boto3.client") as client:
+            config = LangfuseConfig.from_env()
+        client.assert_not_called()
+        self.assertTrue(config.enabled)
+        self.assertEqual(config.base_url, "https://cloud.langfuse.com")
+        self.assertNotIn("private-test", repr(config))
+        self.assertNotIn("public-test", repr(config))
+
+    def test_resolves_missing_key_from_json_secret(self) -> None:
+        environment = {
+            "HELPDESK_AGENT_LANGFUSE_ENABLED": "1",
+            "LANGFUSE_PUBLIC_KEY": "override",
+            "HELPDESK_AGENT_LANGFUSE_SECRET_ARN": "secret-id",
+            "HELPDESK_AGENT_LANGFUSE_SECRET_REGION": "ap-southeast-1",
+        }
+        client = MagicMock()
+        client.get_secret_value.return_value = {
+            "SecretString": '{"public_key":"stored-public","secret_key":"stored-private"}'
+        }
+        with patch.dict(os.environ, environment, clear=True), patch("boto3.client", return_value=client):
+            config = LangfuseConfig.from_env()
+        self.assertEqual(config.public_key, "override")
+        self.assertEqual(config.secret_key, "stored-private")
+        client.get_secret_value.assert_called_once_with(SecretId="secret-id")
+
+    def test_enabled_requires_credentials(self) -> None:
+        with patch.dict(os.environ, {"HELPDESK_AGENT_LANGFUSE_ENABLED": "true"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "requires public and secret keys"):
+                LangfuseConfig.from_env()
 
 
 class TestTriageConfig(unittest.TestCase):

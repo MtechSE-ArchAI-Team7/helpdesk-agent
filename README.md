@@ -192,9 +192,10 @@ cp .env.example .env
 
 ## Observability (OpenTelemetry)
 
-Distributed tracing is always on. By default spans are printed to stdout;
-set `OTEL_EXPORTER_OTLP_ENDPOINT` to export to an OTLP collector (Jaeger,
-Tempo, Azure Monitor, ...).
+Distributed tracing is always on. By default spans are not exported or printed;
+trace IDs remain available for correlation. Set `OTEL_CONSOLE_EXPORTER=1` for
+local debugging, or `OTEL_EXPORTER_OTLP_ENDPOINT` to export to an OTLP collector
+(Jaeger, Tempo, Azure Monitor, ...).
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
@@ -204,6 +205,76 @@ OTEL_SERVICE_NAME=helpdesk-agent
 Instrumented surfaces: inbound FastAPI requests (health probes excluded) and
 outbound httpx calls (OpenAI SDK, MCP adapters). Use
 `helpdesk_agent.observability.get_tracer()` for custom spans in workflow code.
+
+### Langfuse Cloud EU
+
+Langfuse is optional and disabled by default. When enabled, the SDK shares the
+application's OpenTelemetry provider and exports request parents, the complete
+workflow, its named steps, and the three local LLM generations. Health probes,
+ASGI send/receive events, and outbound HTTP noise are excluded. Diagnosis handoffs
+keep the same trace ID; remote diagnosis-agent internals are not instrumented here.
+
+**Full-content capture:** enabling Langfuse exports helpdesk text, workflow
+messages, LLM prompts (including supplied history/browser evidence), and raw
+responses. These may contain personal or user-supplied sensitive data; no automatic
+redaction is applied. Configuration objects and authorization headers are not
+captured. Restrict project access and set retention appropriately. Content is not
+captured by this integration when Langfuse is disabled or fails to initialize.
+When a separate OTLP backend is enabled alongside Langfuse, it also receives these
+application-span attributes, including captured content.
+
+For local development, configure keys outside source control:
+
+```dotenv
+HELPDESK_AGENT_LANGFUSE_ENABLED=1
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+For the deployed AgentCore helpdesk runtime:
+
+1. Create an EU Langfuse project and obtain its public/secret key pair. Store a
+  JSON object with `public_key` and `secret_key` in AWS Secrets Manager. Do not
+  bake keys into the image, commit them, or print them in deployment logs.
+2. Grant the runtime execution role `secretsmanager:GetSecretValue` scoped to
+  that secret, plus `kms:Decrypt` if it uses a customer-managed KMS key.
+3. Configure runtime environment variables before container startup:
+
+  ```dotenv
+  HELPDESK_AGENT_LANGFUSE_ENABLED=1
+  LANGFUSE_BASE_URL=https://cloud.langfuse.com
+  HELPDESK_AGENT_LANGFUSE_SECRET_ARN=<secret ARN or name>
+  HELPDESK_AGENT_LANGFUSE_SECRET_REGION=<AWS secret region>
+  DISABLE_ADOT_OBSERVABILITY=true
+  ```
+
+  Explicit `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` values take precedence over
+  stored values; omit them to use the secret. Disabling ADOT prevents competing
+  tracer initialization and removes built-in ADOT tracing, not application
+  CloudWatch logs. Preserve other desired tracing through the app's OTLP exporter.
+4. Ensure outbound HTTPS to `cloud.langfuse.com` and access to Secrets Manager.
+  Private VPC deployments need suitable egress/NAT and AWS endpoint access.
+5. Rebuild and redeploy using the existing pipeline. Its runtime update script
+  preserves environment variables. No pipeline credential injection is needed.
+
+Do not configure `OTEL_EXPORTER_OTLP_ENDPOINT` or its traces-specific equivalent
+to the same Langfuse destination while enabling the SDK. Use OTLP only for a
+different backend; duplicate Langfuse configuration disables SDK initialization
+with a sanitized warning. Invalid credentials/configuration or secret resolution
+failure similarly leaves helpdesk processing running without Langfuse. Export
+failures are handled in the background, and shutdown attempts a bounded flush.
+
+After deployment, send a synthetic support request through `/invocations`. Confirm
+a connected request/workflow/step/generation hierarchy in the EU project's traces,
+including model, prompts, responses, durations, errors, and provider-returned token
+usage. Check that `/ping` is absent and the diagnosis payload's trace ID matches.
+Usage remains unknown when the gateway supplies none. Cost estimates require a
+recognized model/pricing entry; configure custom pricing for gateway model IDs
+when necessary. No live credentials are checked during application startup.
+
+To roll back, set `HELPDESK_AGENT_LANGFUSE_ENABLED=0` and restart/redeploy the
+runtime. Restore ADOT separately if you need its built-in tracing again.
 
 ### Required
 

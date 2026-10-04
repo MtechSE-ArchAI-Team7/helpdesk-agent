@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, TypedDict
+from collections.abc import Callable, Coroutine
+from functools import wraps
+from typing import Any, ParamSpec, TypeVar, TypedDict
 from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
+from opentelemetry.trace import Status, StatusCode
 
 from ..config import MCPConfig, TriageConfig
 from ..mcp import MCPProxyAdapter
@@ -20,6 +23,7 @@ from ..modules.playwright import PlaywrightAssessment, PlaywrightValidationFlow
 from ..modules.ticketing.service import JiraTicketFlow, extract_ticket_id
 from ..modules.triage.llm import LLMError, LLMTriageClient
 from ..modules.triage.schema import TriageResult
+from ..observability import capture_content, operation_span
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,56 @@ class GraphState(TypedDict):
     existing_ticket: dict[str, Any] | None
     playwright_assessment: PlaywrightAssessment | None
     playwright_validation: dict[str, Any] | None
+
+
+TraceParameters = ParamSpec("TraceParameters")
+TraceOutput = TypeVar("TraceOutput")
+
+
+def _trace_step(
+    name: str,
+) -> Callable[
+    [Callable[TraceParameters, Coroutine[Any, Any, TraceOutput]]],
+    Callable[TraceParameters, Coroutine[Any, Any, TraceOutput]],
+]:
+    def decorate(function: Callable[TraceParameters, Coroutine[Any, Any, TraceOutput]]) -> Callable[
+        TraceParameters, Coroutine[Any, Any, TraceOutput]
+    ]:
+        @wraps(function)
+        async def wrapped(*args: TraceParameters.args, **kwargs: TraceParameters.kwargs) -> TraceOutput:
+            state = args[1] if len(args) > 1 else kwargs.get("state", kwargs.get("initial_state"))
+            initial = state if isinstance(state, dict) else {}
+            previous = initial.get("workflow_state")
+            history_start = len(previous.history) if isinstance(previous, WorkflowState) else 0
+            request = initial.get("initial_input", initial)
+            session_id = str(initial.get("case_id", "case-unknown")) if name == "helpdesk.workflow" else None
+            with operation_span(name, session_id) as span:
+                span.set_attribute("langfuse.observation.type", "agent" if name == "helpdesk.workflow" else "span")
+                capture_content(span, "input", {
+                    key: request[key] for key in ("subject", "body", "summary", "source") if key in request
+                })
+                result = await function(*args, **kwargs)
+                current = result.get("workflow_state") if isinstance(result, dict) else result
+                if isinstance(current, WorkflowState):
+                    span.set_attribute("helpdesk.case_id", current.case_id)
+                    ticket_id = (current.ticket or {}).get("ticket_id")
+                    if ticket_id:
+                        span.set_attribute("langfuse.observation.metadata.ticket_id", str(ticket_id))
+                    capture_content(span, "output", {
+                        "case_id": current.case_id,
+                        "current_step": current.current_step,
+                        "summary": current.summary,
+                        "triage": current.triage,
+                        "clarification": current.clarification,
+                        "messages": current.messages,
+                    })
+                    if any(entry["status"] == "failed" for entry in current.history[history_start:]):
+                        span.set_status(Status(StatusCode.ERROR, "Workflow operation reported failure"))
+                return result
+
+        return wrapped
+
+    return decorate
 
 
 class HelpdeskWorkflow:
@@ -189,6 +243,7 @@ class HelpdeskWorkflow:
         flush_bullets()
         return "\n".join(blocks)
 
+    @_trace_step("workflow.load_ticket")
     async def _load_ticket_node(self, state: GraphState) -> GraphState:
         """Detect a ticket ID in the subject and load the existing Jira ticket."""
         workflow_state = state["workflow_state"]
@@ -245,6 +300,7 @@ class HelpdeskWorkflow:
         every downstream Jira call and the acknowledgment subject are corrupt."""
         return "created" if state.get("ticket_id") else "failed"
 
+    @_trace_step("workflow.create_ticket")
     async def _create_ticket_node(self, state: GraphState) -> GraphState:
         """Create a new Jira ticket for a new issue."""
         workflow_state = state["workflow_state"]
@@ -287,6 +343,7 @@ class HelpdeskWorkflow:
         )
         return state
 
+    @_trace_step("workflow.acknowledge")
     async def _acknowledge_node(self, state: GraphState) -> GraphState:
         """Reply to the user acknowledging the new ticket, with the ticket ID in the subject."""
         workflow_state = state["workflow_state"]
@@ -333,6 +390,7 @@ class HelpdeskWorkflow:
             logger.info("case=%s stage=acknowledge note=no_message_id_email_not_sent", workflow_state.case_id)
         return state
 
+    @_trace_step("workflow.triage")
     async def _triage_node(self, state: GraphState) -> GraphState:
         """Perform LLM triage on the input."""
         workflow_state = state["workflow_state"]
@@ -439,6 +497,7 @@ class HelpdeskWorkflow:
 
         return state
 
+    @_trace_step("workflow.update_ticket")
     async def _update_ticket_node(self, state: GraphState) -> GraphState:
         """Update the Jira ticket's fields to reflect the latest triage results."""
         workflow_state = state["workflow_state"]
@@ -469,11 +528,13 @@ class HelpdeskWorkflow:
         )
         return state
 
+    @_trace_step("workflow.check_clarification")
     async def _check_clarification_node(self, state: GraphState) -> GraphState:
         """Check if clarification is needed."""
         # This node just passes through, the decision is made in _should_clarify
         return state
 
+    @_trace_step("workflow.assess_playwright")
     async def _assess_playwright_node(self, state: GraphState) -> GraphState:
         """Assess browser-test feasibility without invoking browser tools."""
         workflow_state = state["workflow_state"]
@@ -636,6 +697,7 @@ class HelpdeskWorkflow:
         )
         return "clarify"
 
+    @_trace_step("workflow.playwright_validate")
     async def _playwright_validate_node(self, state: GraphState) -> GraphState:
         """Run bounded browser diagnostics, record a concise result, and continue to FAQ."""
         workflow_state = state["workflow_state"]
@@ -750,6 +812,7 @@ class HelpdeskWorkflow:
                 )
         return subject, body
 
+    @_trace_step("workflow.clarify")
     async def _clarify_node(self, state: GraphState) -> GraphState:
         """Send clarification questions to the user and mark the ticket pending clarifications."""
         workflow_state = state["workflow_state"]
@@ -827,6 +890,7 @@ class HelpdeskWorkflow:
 
         return state
 
+    @_trace_step("workflow.faq_gate")
     async def _faq_gate_node(self, state: GraphState) -> GraphState:
         """Check FAQ for existing solution."""
         workflow_state = state["workflow_state"]
@@ -902,6 +966,7 @@ class HelpdeskWorkflow:
         )
         return "diagnose"
 
+    @_trace_step("workflow.resolve_faq")
     async def _resolve_faq_node(self, state: GraphState) -> GraphState:
         """Resolve with FAQ solution: reply to the user and comment on the ticket."""
         workflow_state = state["workflow_state"]
@@ -975,6 +1040,7 @@ class HelpdeskWorkflow:
         logger.info("case=%s stage=resolve_faq status=completed", case_id)
         return state
 
+    @_trace_step("workflow.diagnose")
     async def _diagnose_node(self, state: GraphState) -> GraphState:
         """Mark the ticket as requiring diagnosis (no FAQ match or clarification exhausted)."""
         workflow_state = state["workflow_state"]
@@ -1083,6 +1149,7 @@ class HelpdeskWorkflow:
                 "Ticket comment added: diagnosis agent unreachable",
             )
 
+    @_trace_step("workflow.email_read")
     async def _email_read_node(self, state: GraphState) -> GraphState:
         """Handle email read requests."""
         workflow_state = state["workflow_state"]
@@ -1096,6 +1163,7 @@ class HelpdeskWorkflow:
 
         return state
 
+    @_trace_step("helpdesk.workflow")
     async def run(self, initial_state: dict[str, Any]) -> WorkflowState:
         """Run the workflow with the given initial state."""
         # Create new workflow state (Jira is the source of truth; nothing is resumed

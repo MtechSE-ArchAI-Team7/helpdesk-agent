@@ -12,6 +12,7 @@ os.environ["HELPDESK_AGENT_LLM_API_KEY"] = "test-api-key"
 # test explicitly enables it (e.g. test_mcp.py sets it before importing).
 os.environ.setdefault("HELPDESK_AGENT_USE_MCP", "0")
 os.environ["HELPDESK_AGENT_MEMORY_ENABLED"] = "0"
+os.environ["HELPDESK_AGENT_LANGFUSE_ENABLED"] = "0"
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
