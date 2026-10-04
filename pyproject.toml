@@ -24,6 +24,7 @@ dependencies = [
 ]
 
 [dependency-groups]
+eval = ["deepeval>=3.0,<4"]
 dev = [
   "bandit>=1.8.0",
   "hatchling>=1.28.0",
@@ -63,6 +64,15 @@ artifacts = ["src/helpdesk_agent/py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "unit: isolated component tests with mocked external boundaries",
+  "integration: API, workflow, and transport collaboration tests",
+  "functional: live labelled LLM evaluations",
+]
+
+[tool.coverage.paths]
+source = ["src/helpdesk_agent", "*/src/helpdesk_agent"]
+
 
 [tool.ruff]
 line-length = 120
@@ -92,6 +102,7 @@ entrypoint = "main:app"
 [tool.coverage.run]
 source = ["helpdesk_agent"]
 branch = true
+relative_files = true
 
 [tool.coverage.report]
 show_missing = true

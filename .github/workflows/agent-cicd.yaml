@@ -1,0 +1,294 @@
+name: Agent CICD
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-cicd-${{ vars.AGENTCORE_RUNTIME_ID || github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  agent-cicd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'aios/helpdesk-agent' }}
+      AGENTCORE_RUNTIME_ID: ${{ vars.AGENTCORE_RUNTIME_ID }}
+      DEEPEVAL_TELEMETRY_OPT_OUT: 'YES'
+      DEEPEVAL_RESULTS_FOLDER: reports/deepeval
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Prepare reports
+        run: mkdir -p reports/deepeval
+
+      - name: Install test dependencies
+        id: dependencies
+        continue-on-error: true
+        run: uv sync --frozen --group eval
+
+      - name: Pytest unit tests
+        id: unit
+        continue-on-error: true
+        timeout-minutes: 10
+        run: >-
+          uv run --frozen --no-sync pytest -m unit --strict-markers
+          --junitxml=reports/unit.xml --cov=helpdesk_agent --cov-report=
+
+      - name: Pytest integration tests
+        id: integration
+        continue-on-error: true
+        timeout-minutes: 15
+        run: >-
+          uv run --frozen --no-sync pytest -m integration --strict-markers
+          --junitxml=reports/integration.xml --cov=helpdesk_agent --cov-append --cov-report=
+
+      - name: Export coverage
+        id: coverage
+        continue-on-error: true
+        run: uv run --frozen --no-sync coverage xml -o reports/coverage.xml
+
+      - name: Validate evaluation metric and dataset
+        id: evaluation_checks
+        continue-on-error: true
+        run: >-
+          uv run --frozen --no-sync pytest evaluations/test_triage.py -m unit
+          --strict-markers --junitxml=reports/evaluation-checks.xml
+
+      - name: DeepEval functional tests
+        id: functional
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          HELPDESK_AGENT_LLM_API_KEY: ${{ secrets.HELPDESK_AGENT_LLM_API_KEY }}
+          HELPDESK_AGENT_LLM_MODEL: ${{ vars.HELPDESK_AGENT_LLM_MODEL || 'gpt-4o-mini' }}
+          HELPDESK_AGENT_LLM_BASE_URL: ${{ vars.HELPDESK_AGENT_LLM_BASE_URL }}
+          HELPDESK_AGENT_LLM_TIMEOUT_SECONDS: '30'
+          PYTEST_ADDOPTS: --junitxml=reports/functional.xml --strict-markers
+        run: uv run --frozen --no-sync deepeval test run evaluations/test_triage.py -m functional
+
+      - name: SonarQube Cloud code quality
+        id: sonar
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+        with:
+          args: >-
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.sources=src,scripts
+            -Dsonar.tests=tests,evaluations
+            -Dsonar.python.version=3.12
+            -Dsonar.python.coverage.reportPaths=reports/coverage.xml
+            -Dsonar.exclusions=**/__pycache__/**
+            -Dsonar.qualitygate.wait=false
+
+      - name: Set up Node for Snyk
+        id: node
+        continue-on-error: true
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install Snyk CLI
+        id: snyk_setup
+        continue-on-error: true
+        timeout-minutes: 5
+        run: npm install --global snyk@1.1307.4
+
+      - name: Prepare locked production dependencies for SCA
+        id: sca_dependencies
+        continue-on-error: true
+        run: |
+          uv export --frozen --no-dev --no-hashes --no-emit-project -o reports/requirements.txt
+          uv venv .snyk-venv --seed --python 3.12
+          uv pip sync --python .snyk-venv/bin/python reports/requirements.txt
+
+      - name: Snyk SCA
+        id: sca
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_CFG_ORG: ${{ vars.SNYK_ORG }}
+        run: |
+          set +e
+          snyk test --file=reports/requirements.txt --package-manager=pip \
+            --command=.snyk-venv/bin/python --json-file-output=reports/snyk-sca.json
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Snyk SAST
+        id: sast
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_CFG_ORG: ${{ vars.SNYK_ORG }}
+        run: |
+          set +e
+          snyk code test . --json-file-output=reports/snyk-sast.json
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Validate deployment configuration
+        run: |
+          : "${AGENTCORE_RUNTIME_ID:?Set the AGENTCORE_RUNTIME_ID repository variable}"
+          : "${ECR_REPOSITORY:?Set an existing ECR repository}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Prepare unique image tag
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: echo "uri=$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build container image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: ${{ steps.image.outputs.uri }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy container image scan
+        id: trivy
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: aquasecurity/trivy-action@0.35.0
+        env:
+          TRIVY_IMAGE_SRC: docker
+        with:
+          image-ref: ${{ steps.image.outputs.uri }}
+          scan-type: image
+          scanners: vuln
+          vuln-type: os,library
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          format: json
+          output: reports/trivy.json
+          exit-code: '0'
+          timeout: 10m
+
+      - name: Push image to Amazon ECR
+        id: push
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: |
+          docker push "$IMAGE_URI"
+          digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=${IMAGE_URI##*:}" --query 'imageDetails[0].imageDigest' --output text)
+          [[ "$digest" == sha256:* ]]
+          echo "digest_uri=${IMAGE_URI%:*}@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Update Amazon AgentCore runtime
+        id: deploy
+        timeout-minutes: 20
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: >-
+          uv run --frozen --no-dev python scripts/update_agentcore_runtime.py
+          --runtime-id "$AGENTCORE_RUNTIME_ID" --region "$AWS_REGION" --image-uri "$IMAGE_URI"
+
+      - name: Publish pipeline summary
+        if: always()
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          DIGEST_URI: ${{ steps.push.outputs.digest_uri }}
+          RUNTIME_VERSION: ${{ steps.deploy.outputs.runtime_version }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+
+          results = json.loads(os.environ['STEP_RESULTS'])
+          names = ['dependencies', 'unit', 'integration', 'coverage', 'evaluation_checks',
+                   'functional', 'sonar', 'node', 'snyk_setup', 'sca_dependencies',
+                   'sca', 'sast', 'build', 'trivy', 'push', 'deploy']
+          lines = ['## Agent CICD', '', 'Tests and scans are advisory; failures do not block deployment.',
+                   '', '| Stage | Outcome |', '| --- | --- |']
+          for name in names:
+              step = results.get(name, {})
+              outcome = step.get('outcome', 'not run')
+              code = step.get('outputs', {}).get('exit_code')
+              if code:
+                  detail = {'0': 'no findings', '1': 'findings', '2': 'scanner/configuration error',
+                            '3': 'no supported project'}.get(code, 'tool error')
+                  outcome += f' ({detail}, exit {code})'
+              lines.append(f'| {name} | {outcome} |')
+          report = Path('reports/trivy.json')
+          if report.exists():
+              try:
+                  data = json.loads(report.read_text())
+                  counts = Counter(v['Severity'] for r in data.get('Results', [])
+                                   for v in r.get('Vulnerabilities', []) or [])
+                  lines += ['', f'Trivy vulnerability counts: {dict(counts)}']
+              except (ValueError, KeyError):
+                  lines += ['', 'Trivy report could not be parsed; inspect the scan logs.']
+          else:
+              lines += ['', 'Trivy report unavailable; the image has not been verified clean.']
+          for label, key in [('Image', 'IMAGE_URI'), ('Pushed digest', 'DIGEST_URI'),
+                             ('Runtime', 'AGENTCORE_RUNTIME_ID'), ('New version', 'RUNTIME_VERSION')]:
+              lines.append(f"{label}: `{os.environ.get(key) or 'unavailable'}`")
+          lines += ['', 'Available reports are attached as the agent-cicd-reports artifact.']
+          Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-cicd-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14

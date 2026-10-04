@@ -1,0 +1,9 @@
+version: v1.25.0
+exclude:
+  global:
+    - .venv/**
+    - .snyk-venv/**
+    - reports/**
+    - '**/__pycache__/**'
+    - .env
+    - .env.*

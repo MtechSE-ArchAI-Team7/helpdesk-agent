@@ -23,6 +23,10 @@ htmlcov/
 .ruff_cache/
 bandit.json
 pip-audit.json
+reports/
+.snyk-venv/
+.deepeval/
+.deepeval*
 
 # Local environment
 .env

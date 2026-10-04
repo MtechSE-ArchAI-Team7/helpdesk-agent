@@ -2,6 +2,93 @@
 
 AI-powered helpdesk triage agent with email intake, LLM-based triage, FAQ resolution, and Jira ticket creation.
 
+## Agent CICD
+
+The separate [Agent CICD workflow](.github/workflows/agent-cicd.yaml) runs only
+through **Actions > Agent CICD > Run workflow**. Dispatch a trusted ref. It leaves
+the existing CI and Image workflows unchanged.
+
+Stages run in order: pytest unit tests, pytest integration tests, DeepEval
+functional evaluations, SonarQube Cloud analysis, Snyk SCA and SAST, ARM64
+container build, Trivy image scan, ECR push, and AgentCore runtime update.
+
+**Tests and scanners are advisory.** They continue on error without enforcing
+quality gates or vulnerability thresholds. A successful deployment does not mean
+tests or scans passed. Inspect the stage outcomes in the job summary and the
+`agent-cicd-reports` artifact, which contains available JUnit, coverage, DeepEval,
+Snyk, and Trivy reports. Snyk exit 1 means findings; exits 2/3 mean tool errors or
+no supported project. A clean Snyk Code scan may not produce a JSON file.
+Dependency-installation and coverage errors are also reported without blocking
+the build. Credential setup, build, push, and runtime-update errors fail deployment.
+
+The workflow builds once, scans the locally loaded image, then pushes that same
+image. Image tags include commit SHA, run ID, and run attempt, rather than mutable
+`latest` or `main` tags. Runs targeting the same runtime are serialized.
+
+Configure these GitHub repository **secrets** before running:
+
+| Secret | Purpose |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Existing AWS deployment credentials |
+| `SONAR_TOKEN` | SonarQube Cloud analysis token |
+| `SNYK_TOKEN` | Snyk token with SCA and Snyk Code access |
+| `HELPDESK_AGENT_LLM_API_KEY` | Live triage model credential, not the pytest dummy key |
+
+Configure these repository **variables**:
+
+| Variable | Purpose/default |
+| --- | --- |
+| `AGENTCORE_RUNTIME_ID` | Required existing helpdesk container runtime ID, not an ARN |
+| `AWS_REGION` | `ap-southeast-1` |
+| `ECR_REPOSITORY` | Existing repository; defaults to `aios/helpdesk-agent` |
+| `SONAR_PROJECT_KEY`, `SONAR_ORGANIZATION` | Required for Cloud analysis |
+| `SONAR_HOST_URL` | `https://sonarcloud.io`; override for your Cloud region |
+| `SNYK_ORG` | Optional organization ID/slug; otherwise token's preferred organization |
+| `HELPDESK_AGENT_LLM_MODEL` | `gpt-4o-mini` |
+| `HELPDESK_AGENT_LLM_BASE_URL` | Optional OpenAI-compatible gateway URL |
+
+Disable SonarQube Cloud automatic analysis for this project when enabling CI
+analysis. Enable Snyk Code in the selected Snyk organization. Missing scanner or
+LLM configuration produces advisory errors, not a clean assessment.
+
+The ECR repository and AgentCore runtime must already exist in the deployment
+account/region. The AWS deployment principal needs ECR authentication, layer
+upload, image-push and `DescribeImages` permissions, AgentCore `GetAgentRuntime` and
+`UpdateAgentRuntime`, and narrowly scoped `iam:PassRole` for the runtime role
+where required. The runtime execution role must be able to pull the ECR image.
+Its environment must already contain the production LLM and service configuration.
+The diagnosis-agent ARN elsewhere in this README is a remote dependency, **not**
+the deployment target.
+
+[The update helper](scripts/update_agentcore_runtime.py) requires an existing
+`READY` HTTP container runtime, preserves its execution role, network, environment,
+authorization and other supported configuration, and changes only the image URI.
+It waits up to 15 minutes for the returned version to become `READY`, and verifies
+that version's image. It does not create infrastructure, change named endpoint
+version pins, update Lambda functions, or automatically roll back failures.
+Consumers pinned to a named endpoint/version require separate promotion.
+
+Tests are explicitly partitioned in [the pytest configuration](tests/conftest.py).
+Integration tests exercise API/workflow/transport collaboration with remote
+boundaries mocked; they do not contact production services. New test modules
+must be categorized there or explicitly marked `unit`/`integration`.
+Live evaluations live outside `tests/` to avoid its dummy-credential fixtures.
+
+```bash
+uv sync --frozen --group eval
+uv run pytest -m unit --strict-markers
+uv run pytest -m integration --strict-markers
+uv run --group eval pytest evaluations/test_triage.py -m unit
+uv run --group eval deepeval test run evaluations/test_triage.py -m functional
+```
+
+[The initial labelled dataset](evaluations/triage_cases.json) has 12 synthetic,
+explicitly described cases. DeepEval scores exact service/issue-type/priority
+matches without a separate judge model or Confident AI account. This is a smoke
+baseline, not production-quality certification; extend it with reviewed,
+de-identified examples before relying on its quality scores. The eval dependency
+group is excluded from the production image. Live evaluations incur model costs.
+
 ## Architecture
 
 The agent is organized into domain modules:
