@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from helpdesk_agent.config import MCPConfig
+from helpdesk_agent.config import MCPConfig, TriageConfig
 from helpdesk_agent.core.workflow import HelpdeskWorkflow
 from helpdesk_agent.mcp import MCPProxyAdapter, MCPResponse
 from helpdesk_agent.modules.playwright import PlaywrightAssessment, PlaywrightEvaluation, PlaywrightValidationFlow
@@ -352,6 +352,30 @@ def test_clarification_round_cap_routes_eligible_case_to_playwright(mock_llm_cli
     }
 
     assert workflow._should_clarify(state) == "playwright"
+
+
+def test_custom_clarification_round_cap_is_used(mock_llm_client) -> None:
+    workflow = HelpdeskWorkflow(
+        llm_client=mock_llm_client,
+        triage_config=TriageConfig(max_clarification_rounds=3),
+    )
+    state = {
+        "workflow_state": MagicMock(case_id="HELP-57"),
+        "initial_input": {},
+        "triage_result": _triage_result(confidence=0.2, missing_info=["still unclear"]),
+        "faq_results": None,
+        "ticket_id": "HELP-57",
+        "existing_ticket": {
+            "comments": [
+                {"body": "Pending clarifications — round 1"},
+                {"body": "Pending clarifications — round 2"},
+            ]
+        },
+        "playwright_assessment": None,
+        "playwright_validation": None,
+    }
+
+    assert workflow._should_clarify(state) == "clarify"
 
 
 @pytest.mark.asyncio

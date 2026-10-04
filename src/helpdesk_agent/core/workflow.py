@@ -23,9 +23,6 @@ from ..modules.triage.schema import TriageResult
 
 logger = logging.getLogger(__name__)
 
-#: Maximum number of clarification rounds before escalating to diagnosis.
-MAX_CLARIFICATION_ROUNDS = 2
-
 #: Marker used in Jira comments so clarification rounds can be counted from the ticket.
 CLARIFICATION_COMMENT_MARKER = "pending clarifications"
 
@@ -610,20 +607,21 @@ class HelpdeskWorkflow:
             return "faq_gate"
 
         rounds = self._clarification_rounds(state)
-        if rounds >= MAX_CLARIFICATION_ROUNDS:
+        max_rounds = self.triage_config.max_clarification_rounds
+        if rounds >= max_rounds:
             if assessment and assessment.decision == "eligible" and assessment.target_url:
                 logger.info(
                     "case=%s gate=clarification decision=playwright reason=max_rounds rounds=%d max=%d",
                     case_id,
                     rounds,
-                    MAX_CLARIFICATION_ROUNDS,
+                    max_rounds,
                 )
                 return "playwright"
             logger.info(
                 "case=%s gate=clarification decision=diagnose reason=max_rounds rounds=%d max=%d",
                 case_id,
                 rounds,
-                MAX_CLARIFICATION_ROUNDS,
+                max_rounds,
             )
             return "diagnose"
 
@@ -989,10 +987,11 @@ class HelpdeskWorkflow:
         rounds = self._clarification_rounds(state)
         triage_summary = triage_result.summary if triage_result else workflow_state.summary
 
-        if rounds >= MAX_CLARIFICATION_ROUNDS:
+        max_rounds = self.triage_config.max_clarification_rounds
+        if rounds >= max_rounds:
             comment_body = (
                 f"Diagnosis required — clarification attempts exhausted "
-                f"({rounds}/{MAX_CLARIFICATION_ROUNDS} rounds).\n\n"
+                f"({rounds}/{max_rounds} rounds).\n\n"
                 f"Latest triage summary: {triage_summary}"
             )
         else:

@@ -2,7 +2,23 @@ import os
 import unittest
 from unittest.mock import patch
 
-from helpdesk_agent.config import LLMConfig, MCPConfig
+from helpdesk_agent.config import LLMConfig, MCPConfig, TriageConfig
+
+
+class TestTriageConfig(unittest.TestCase):
+    def test_from_env_uses_default_clarification_round_limit(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = TriageConfig.from_env()
+        self.assertEqual(config.max_clarification_rounds, 2)
+
+    def test_from_env_reads_custom_clarification_round_limit(self) -> None:
+        with patch.dict(os.environ, {"HELPDESK_AGENT_MAX_CLARIFICATION_ROUNDS": "4"}, clear=True):
+            config = TriageConfig.from_env()
+        self.assertEqual(config.max_clarification_rounds, 4)
+
+    def test_rejects_negative_clarification_round_limit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be non-negative"):
+            TriageConfig(max_clarification_rounds=-1)
 
 
 class TestLLMConfig(unittest.TestCase):

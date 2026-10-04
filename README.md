@@ -57,8 +57,8 @@ continue to FAQ search without blocking the case.
 Next, the workflow asks for clarification if triage confidence is below
 `HELPDESK_AGENT_TRIAGE_CONFIDENCE_THRESHOLD` (default `0.6`) or triage reports
 missing information. Clarification attempts are counted from Jira comments;
-after two prior rounds, the case goes to diagnosis instead. Otherwise, the
-workflow searches the FAQ service. A top result at or above
+after the configured maximum (default two rounds), the case goes to diagnosis
+instead. Otherwise, the workflow searches the FAQ service. A top result at or above
 `HELPDESK_AGENT_FAQ_RELEVANCE_THRESHOLD` (default `0.7`) is emailed to the
 requester and recorded on the ticket. If there is no sufficiently relevant FAQ
 result, the ticket is marked as requiring diagnosis and may be handed off to a
@@ -112,6 +112,8 @@ outbound httpx calls (OpenAI SDK, MCP adapters). Use
 - `HELPDESK_AGENT_LLM_TIMEOUT_SECONDS` - LLM request timeout (default: `30.0`)
 - `HELPDESK_AGENT_TRIAGE_CONFIDENCE_THRESHOLD` - Confidence threshold for clarification (default: `0.6`)
 - `HELPDESK_AGENT_FAQ_RELEVANCE_THRESHOLD` - FAQ relevance threshold (default: `0.7`)
+- `HELPDESK_AGENT_MAX_CLARIFICATION_ROUNDS` - Maximum clarification rounds before escalation
+  (default: `2`; `0` disables clarification)
 
 ### AgentCore ticket memory
 

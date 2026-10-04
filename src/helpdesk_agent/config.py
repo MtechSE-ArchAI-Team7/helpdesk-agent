@@ -121,12 +121,18 @@ class TriageConfig:
 
     confidence_threshold: float = 0.6
     faq_relevance_threshold: float = 0.7
+    max_clarification_rounds: int = 2
+
+    def __post_init__(self) -> None:
+        if self.max_clarification_rounds < 0:
+            raise ValueError("HELPDESK_AGENT_MAX_CLARIFICATION_ROUNDS must be non-negative")
 
     @classmethod
     def from_env(cls) -> "TriageConfig":
         return cls(
             confidence_threshold=float(os.getenv("HELPDESK_AGENT_TRIAGE_CONFIDENCE_THRESHOLD", "0.6")),
             faq_relevance_threshold=float(os.getenv("HELPDESK_AGENT_FAQ_RELEVANCE_THRESHOLD", "0.7")),
+            max_clarification_rounds=int(os.getenv("HELPDESK_AGENT_MAX_CLARIFICATION_ROUNDS", "2")),
         )
 
 
