@@ -11,19 +11,29 @@ the existing CI and Image workflows unchanged.
 Stages run in order: pytest unit tests, pytest integration tests, DeepEval
 functional evaluations, SonarQube Cloud analysis, Snyk SCA and SAST, ARM64
 container build, Trivy image scan, ECR push, and AgentCore runtime update.
+Each stage has its own job/box in the Actions graph, followed by a Summary job.
+Jobs run on separate runners and pass coverage and the container through artifacts.
 
 **Tests and scanners are advisory.** They continue on error without enforcing
 quality gates or vulnerability thresholds. A successful deployment does not mean
-tests or scans passed. Inspect the stage outcomes in the job summary and the
-`agent-cicd-reports` artifact, which contains available JUnit, coverage, DeepEval,
-Snyk, and Trivy reports. Snyk exit 1 means findings; exits 2/3 mean tool errors or
+tests or scans passed. Inspect the raw step outcomes in the Summary job and the
+per-stage `agent-cicd-reports-*` artifacts, which contain available JUnit,
+coverage, DeepEval, Snyk, and Trivy reports. Snyk exit 1 means findings; exits 2/3 mean tool errors or
 no supported project. A clean Snyk Code scan may not produce a JSON file.
 Dependency-installation and coverage errors are also reported without blocking
-the build. Credential setup, build, push, and runtime-update errors fail deployment.
+the build. A failed advisory job does not skip the remaining stages, but cancellation
+prevents downstream work. Build/artifact-export failure prevents scanning and
+publishing; push failure prevents runtime updates. Credential setup and
+runtime-update errors also fail deployment. Summary runs even after failures.
 
-The workflow builds once, scans the locally loaded image, then pushes that same
-image. Image tags include commit SHA, run ID, and run attempt, rather than mutable
-`latest` or `main` tags. Runs targeting the same runtime are serialized.
+Unit and integration jobs upload independent coverage data, which SonarQube
+combines into one coverage report. The workflow builds once and exports an image
+archive. Trivy and ECR Push download that same archive and independently verify
+its recorded SHA-256 checksum; Push loads it without rebuilding. Image tags include
+commit SHA, run ID, and run attempt, rather than mutable `latest` or `main` tags.
+Runs targeting the same runtime are serialized. Report artifacts are retained for
+14 days and image artifacts for 3 days; cross-runner image transfers add runtime
+and artifact storage usage.
 
 Configure these GitHub repository **secrets** before running:
 

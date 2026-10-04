@@ -10,72 +10,139 @@ concurrency:
   group: agent-cicd-${{ vars.AGENTCORE_RUNTIME_ID || github.repository }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'aios/helpdesk-agent' }}
+  AGENTCORE_RUNTIME_ID: ${{ vars.AGENTCORE_RUNTIME_ID }}
+  DEEPEVAL_TELEMETRY_OPT_OUT: 'YES'
+  DEEPEVAL_RESULTS_FOLDER: reports/deepeval
+
 jobs:
-  agent-cicd:
+  unit:
+    name: Unit Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    defaults:
-      run:
-        shell: bash
-    env:
-      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
-      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'aios/helpdesk-agent' }}
-      AGENTCORE_RUNTIME_ID: ${{ vars.AGENTCORE_RUNTIME_ID }}
-      DEEPEVAL_TELEMETRY_OPT_OUT: 'YES'
-      DEEPEVAL_RESULTS_FOLDER: reports/deepeval
+    timeout-minutes: 15
+    outputs:
+      stages: ${{ toJSON(steps) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           persist-credentials: false
-
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
-
       - name: Prepare reports
-        run: mkdir -p reports/deepeval
-
+        run: mkdir -p reports
       - name: Install test dependencies
         id: dependencies
         continue-on-error: true
-        run: uv sync --frozen --group eval
-
+        run: uv sync --frozen
       - name: Pytest unit tests
-        id: unit
+        id: tests
         continue-on-error: true
         timeout-minutes: 10
+        env:
+          COVERAGE_FILE: reports/.coverage.unit
         run: >-
           uv run --frozen --no-sync pytest -m unit --strict-markers
           --junitxml=reports/unit.xml --cov=helpdesk_agent --cov-report=
+      - name: Upload unit reports and coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-cicd-reports-unit
+          path: reports/
+          include-hidden-files: true
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14
 
+  integration:
+    name: Integration Tests
+    needs: unit
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      stages: ${{ toJSON(steps) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+      - name: Prepare reports
+        run: mkdir -p reports
+      - name: Install test dependencies
+        id: dependencies
+        continue-on-error: true
+        run: uv sync --frozen
       - name: Pytest integration tests
-        id: integration
+        id: tests
         continue-on-error: true
         timeout-minutes: 15
+        env:
+          COVERAGE_FILE: reports/.coverage.integration
         run: >-
           uv run --frozen --no-sync pytest -m integration --strict-markers
-          --junitxml=reports/integration.xml --cov=helpdesk_agent --cov-append --cov-report=
+          --junitxml=reports/integration.xml --cov=helpdesk_agent --cov-report=
+      - name: Upload integration reports and coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-cicd-reports-integration
+          path: reports/
+          include-hidden-files: true
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14
 
-      - name: Export coverage
-        id: coverage
+  functional:
+    name: Functional Tests
+    needs: integration
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      stages: ${{ toJSON(steps) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+      - name: Prepare reports
+        run: mkdir -p reports/deepeval
+      - name: Install evaluation dependencies
+        id: dependencies
         continue-on-error: true
-        run: uv run --frozen --no-sync coverage xml -o reports/coverage.xml
-
+        run: uv sync --frozen --group eval
       - name: Validate evaluation metric and dataset
         id: evaluation_checks
         continue-on-error: true
         run: >-
           uv run --frozen --no-sync pytest evaluations/test_triage.py -m unit
           --strict-markers --junitxml=reports/evaluation-checks.xml
-
       - name: DeepEval functional tests
-        id: functional
+        id: tests
         continue-on-error: true
         timeout-minutes: 15
         env:
@@ -85,9 +152,64 @@ jobs:
           HELPDESK_AGENT_LLM_TIMEOUT_SECONDS: '30'
           PYTEST_ADDOPTS: --junitxml=reports/functional.xml --strict-markers
         run: uv run --frozen --no-sync deepeval test run evaluations/test_triage.py -m functional
+      - name: Upload functional reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-cicd-reports-functional
+          path: reports/
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14
 
+  sonar:
+    name: SonarQube
+    needs: [unit, integration, functional]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      stages: ${{ toJSON(steps) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+      - name: Prepare reports
+        run: mkdir -p reports
+      - name: Install coverage tools
+        id: dependencies
+        continue-on-error: true
+        run: uv sync --frozen
+      - name: Download unit coverage
+        id: unit_coverage
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-cicd-reports-unit
+          path: reports/
+      - name: Download integration coverage
+        id: integration_coverage
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-cicd-reports-integration
+          path: reports/
+      - name: Combine and export coverage
+        id: coverage
+        continue-on-error: true
+        run: |
+          uv run --frozen --no-sync coverage combine --keep reports
+          uv run --frozen --no-sync coverage xml -o reports/coverage.xml
       - name: SonarQube Cloud code quality
-        id: sonar
+        id: scan
         continue-on-error: true
         timeout-minutes: 10
         uses: SonarSource/sonarqube-scan-action@v6
@@ -98,30 +220,57 @@ jobs:
           args: >-
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+      - name: Upload combined coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-cicd-reports-sonar
+          path: reports/coverage.xml
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14
 
+  sca:
+    name: Snyk SCA
+    needs: sonar
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      stages: ${{ toJSON(steps) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+      - name: Prepare reports
+        run: mkdir -p reports
       - name: Set up Node for Snyk
         id: node
         continue-on-error: true
         uses: actions/setup-node@v6
         with:
           node-version: '22'
-
       - name: Install Snyk CLI
         id: snyk_setup
         continue-on-error: true
         timeout-minutes: 5
         run: npm install --global snyk@1.1307.4
-
       - name: Prepare locked production dependencies for SCA
-        id: sca_dependencies
+        id: dependencies
         continue-on-error: true
         run: |
           uv export --frozen --no-dev --no-hashes --no-emit-project -o reports/requirements.txt
           uv venv .snyk-venv --seed --python 3.12
           uv pip sync --python .snyk-venv/bin/python reports/requirements.txt
-
       - name: Snyk SCA
-        id: sca
+        id: scan
         continue-on-error: true
         timeout-minutes: 10
         env:
@@ -134,9 +283,44 @@ jobs:
           status=$?
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
+      - name: Upload SCA reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-cicd-reports-sca
+          path: reports/
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14
 
+  sast:
+    name: Snyk SAST
+    needs: sca
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      stages: ${{ toJSON(steps) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Prepare reports
+        run: mkdir -p reports
+      - name: Set up Node for Snyk
+        id: node
+        continue-on-error: true
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Install Snyk CLI
+        id: snyk_setup
+        continue-on-error: true
+        timeout-minutes: 5
+        run: npm install --global snyk@1.1307.4
       - name: Snyk SAST
-        id: sast
+        id: scan
         continue-on-error: true
         timeout-minutes: 10
         env:
@@ -148,60 +332,115 @@ jobs:
           status=$?
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
+      - name: Upload SAST reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-cicd-reports-sast
+          path: reports/
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14
 
+  build:
+    name: Build Image
+    needs: sast
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      image_uri: ${{ steps.image.outputs.uri }}
+      image_artifact: ${{ steps.image.outputs.artifact }}
+      archive_sha256: ${{ steps.checksum.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Validate deployment configuration
         run: |
           : "${AGENTCORE_RUNTIME_ID:?Set the AGENTCORE_RUNTIME_ID repository variable}"
           : "${ECR_REPOSITORY:?Set an existing ECR repository}"
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
       - name: Login to Amazon ECR
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Prepare unique image tag
+      - name: Prepare unique image tag and archive directory
         id: image
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-        run: echo "uri=$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-
+        run: |
+          mkdir -p "$RUNNER_TEMP/image"
+          echo "uri=$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "artifact=agent-cicd-image-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-
-      - name: Build container image
-        id: build
+      - name: Build and export container image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
           platforms: linux/arm64
           push: false
-          load: true
+          outputs: type=docker,dest=${{ runner.temp }}/image/image.tar
           tags: ${{ steps.image.outputs.uri }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Record archive checksum
+        id: checksum
+        working-directory: ${{ runner.temp }}/image
+        run: |
+          sha256sum image.tar > image.tar.sha256
+          echo "sha256=$(cut -d ' ' -f1 image.tar.sha256)" >> "$GITHUB_OUTPUT"
+      - name: Upload built image
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.image.outputs.artifact }}
+          path: ${{ runner.temp }}/image/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
 
+  trivy:
+    name: Trivy Scan
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      stages: ${{ toJSON(steps) }}
+    steps:
+      - name: Prepare reports
+        run: mkdir -p reports
+      - name: Download built image
+        id: image
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.image_artifact }}
+          path: ${{ runner.temp }}/image/
+      - name: Verify archive checksum
+        id: checksum
+        working-directory: ${{ runner.temp }}/image
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.archive_sha256 }}
+        run: printf '%s  image.tar\n' "$EXPECTED_SHA256" | sha256sum --check -
       - name: Trivy container image scan
-        id: trivy
+        id: scan
         continue-on-error: true
         timeout-minutes: 10
         uses: aquasecurity/trivy-action@0.35.0
-        env:
-          TRIVY_IMAGE_SRC: docker
         with:
-          image-ref: ${{ steps.image.outputs.uri }}
+          input: ${{ runner.temp }}/image/image.tar
           scan-type: image
           scanners: vuln
           vuln-type: os,library
@@ -210,11 +449,50 @@ jobs:
           output: reports/trivy.json
           exit-code: '0'
           timeout: 10m
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-cicd-reports-trivy
+          path: reports/
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14
 
+  push:
+    name: Push to ECR
+    needs: [build, trivy]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      image_uri: ${{ needs.build.outputs.image_uri }}
+      digest_uri: ${{ steps.push.outputs.digest_uri }}
+    steps:
+      - name: Download built image
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.image_artifact }}
+          path: ${{ runner.temp }}/image/
+      - name: Verify archive checksum
+        working-directory: ${{ runner.temp }}/image
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.archive_sha256 }}
+        run: printf '%s  image.tar\n' "$EXPECTED_SHA256" | sha256sum --check -
+      - name: Load the scanned image
+        run: docker load --input "$RUNNER_TEMP/image/image.tar"
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
       - name: Push image to Amazon ECR
         id: push
         env:
-          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          IMAGE_URI: ${{ needs.build.outputs.image_uri }}
         run: |
           docker push "$IMAGE_URI"
           digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
@@ -222,22 +500,62 @@ jobs:
           [[ "$digest" == sha256:* ]]
           echo "digest_uri=${IMAGE_URI%:*}@$digest" >> "$GITHUB_OUTPUT"
 
+  deploy:
+    name: Update AgentCore
+    needs: push
+    if: ${{ !cancelled() && needs.push.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      runtime_version: ${{ steps.deploy.outputs.runtime_version }}
+      runtime_status: ${{ steps.deploy.outputs.status }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
       - name: Update Amazon AgentCore runtime
         id: deploy
         timeout-minutes: 20
         env:
-          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          IMAGE_URI: ${{ needs.push.outputs.image_uri }}
         run: >-
           uv run --frozen --no-dev python scripts/update_agentcore_runtime.py
           --runtime-id "$AGENTCORE_RUNTIME_ID" --region "$AWS_REGION" --image-uri "$IMAGE_URI"
 
+  summary:
+    name: Summary
+    needs: [unit, integration, functional, sonar, sca, sast, build, trivy, push, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download available reports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: agent-cicd-reports-*
+          path: reports/
+          merge-multiple: true
       - name: Publish pipeline summary
-        if: always()
         env:
-          STEP_RESULTS: ${{ toJSON(steps) }}
-          IMAGE_URI: ${{ steps.image.outputs.uri }}
-          DIGEST_URI: ${{ steps.push.outputs.digest_uri }}
-          RUNTIME_VERSION: ${{ steps.deploy.outputs.runtime_version }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          IMAGE_URI: ${{ needs.build.outputs.image_uri }}
+          DIGEST_URI: ${{ needs.push.outputs.digest_uri }}
+          RUNTIME_VERSION: ${{ needs.deploy.outputs.runtime_version }}
+          RUNTIME_STATUS: ${{ needs.deploy.outputs.runtime_status }}
         run: |
           python - <<'PY'
           import json
@@ -245,21 +563,23 @@ jobs:
           from collections import Counter
           from pathlib import Path
 
-          results = json.loads(os.environ['STEP_RESULTS'])
-          names = ['dependencies', 'unit', 'integration', 'coverage', 'evaluation_checks',
-                   'functional', 'sonar', 'node', 'snyk_setup', 'sca_dependencies',
-                   'sca', 'sast', 'build', 'trivy', 'push', 'deploy']
+          results = json.loads(os.environ['JOB_RESULTS'])
+          names = ['unit', 'integration', 'functional', 'sonar', 'sca', 'sast',
+                   'build', 'trivy', 'push', 'deploy']
           lines = ['## Agent CICD', '', 'Tests and scans are advisory; failures do not block deployment.',
-                   '', '| Stage | Outcome |', '| --- | --- |']
+                   '', '| Job / stage | Outcome |', '| --- | --- |']
           for name in names:
-              step = results.get(name, {})
-              outcome = step.get('outcome', 'not run')
-              code = step.get('outputs', {}).get('exit_code')
-              if code:
-                  detail = {'0': 'no findings', '1': 'findings', '2': 'scanner/configuration error',
-                            '3': 'no supported project'}.get(code, 'tool error')
-                  outcome += f' ({detail}, exit {code})'
-              lines.append(f'| {name} | {outcome} |')
+              job = results[name]
+              lines.append(f"| {name} | {job['result']} |")
+              stages = job.get('outputs', {}).get('stages', '')
+              for stage, step in json.loads(stages or '{}').items():
+                  outcome = step.get('outcome', 'not run')
+                  code = step.get('outputs', {}).get('exit_code')
+                  if code:
+                      detail = {'0': 'no findings', '1': 'findings', '2': 'scanner/configuration error',
+                                '3': 'no supported project'}.get(code, 'tool error')
+                      outcome += f' ({detail}, exit {code})'
+                  lines.append(f'| {name}.{stage} | {outcome} |')
           report = Path('reports/trivy.json')
           if report.exists():
               try:
@@ -271,18 +591,14 @@ jobs:
                   lines += ['', 'Trivy report could not be parsed; inspect the scan logs.']
           else:
               lines += ['', 'Trivy report unavailable; the image has not been verified clean.']
+          if any(results[name]['result'] != 'success' for name in ['unit', 'integration']):
+              lines += ['', 'A test job failed; coverage may be partial or unavailable.']
           for label, key in [('Image', 'IMAGE_URI'), ('Pushed digest', 'DIGEST_URI'),
-                             ('Runtime', 'AGENTCORE_RUNTIME_ID'), ('New version', 'RUNTIME_VERSION')]:
+                             ('Runtime', 'AGENTCORE_RUNTIME_ID'), ('New version', 'RUNTIME_VERSION'),
+                             ('Runtime status', 'RUNTIME_STATUS')]:
               lines.append(f"{label}: `{os.environ.get(key) or 'unavailable'}`")
-          lines += ['', 'Available reports are attached as the agent-cicd-reports artifact.']
+          lines += ['', 'Reports: download the per-stage agent-cicd-reports-* artifacts from this run.',
+                    f"[Run and artifacts]({os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                    f"/actions/runs/{os.environ['GITHUB_RUN_ID']})"]
           Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('\n'.join(lines) + '\n')
           PY
-
-      - name: Upload reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-cicd-reports-${{ github.run_id }}-${{ github.run_attempt }}
-          path: reports/
-          if-no-files-found: warn
-          retention-days: 14
