@@ -61,6 +61,13 @@ Disable SonarQube Cloud automatic analysis for this project when enabling CI
 analysis. Enable Snyk Code in the selected Snyk organization. Missing scanner or
 LLM configuration produces advisory errors, not a clean assessment.
 
+SCA installs production dependencies from the frozen universal lock export, then
+generates a marker-free scan manifest from packages installed for the runner's
+Python version and platform. This avoids Snyk treating conditional dependencies
+for other environments as missing. Both manifests are included in the SCA reports.
+Compatible setuptools is installed only for scanner tooling; it does not change
+the application lockfile or image and is excluded from the scan manifest.
+
 The ECR repository and AgentCore runtime must already exist in the deployment
 account/region. The AWS deployment principal needs ECR authentication, layer
 upload, image-push and `DescribeImages` permissions, AgentCore `GetAgentRuntime` and

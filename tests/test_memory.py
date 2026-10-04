@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
+from botocore import UNSIGNED
+from botocore.config import Config
 from botocore.stub import ANY, Stubber
 
 from helpdesk_agent.config import MemoryConfig
@@ -27,8 +29,7 @@ def aws_client():
     return boto3.client(
         "bedrock-agentcore",
         region_name="us-west-2",
-        aws_access_key_id="testing",
-        aws_secret_access_key="testing",  # noqa: S106 - Stubber-only dummy credentials
+        config=Config(signature_version=UNSIGNED),
     )
 
 

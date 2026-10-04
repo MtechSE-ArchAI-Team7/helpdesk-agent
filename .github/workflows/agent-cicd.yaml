@@ -266,9 +266,13 @@ jobs:
         id: dependencies
         continue-on-error: true
         run: |
-          uv export --frozen --no-dev --no-hashes --no-emit-project -o reports/requirements.txt
+          uv export --frozen --no-dev --no-hashes --no-emit-project -o reports/requirements.lock.txt
           uv venv .snyk-venv --seed --python 3.12
-          uv pip sync --python .snyk-venv/bin/python reports/requirements.txt
+          uv pip sync --python .snyk-venv/bin/python reports/requirements.lock.txt
+          uv pip install --python .snyk-venv/bin/python 'setuptools<81'
+          .snyk-venv/bin/python -c 'import pip, pkg_resources'
+          .snyk-venv/bin/python -m pip check
+          .snyk-venv/bin/python -m pip freeze --exclude pip --exclude setuptools --exclude wheel > reports/requirements.txt
       - name: Snyk SCA
         id: scan
         continue-on-error: true
