@@ -5,11 +5,13 @@ from typing import Any
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
+from pydantic import BaseModel
 
 from ...config import LLMConfig
 from ...observability import generation, record_generation_response
 from ..playwright import PlaywrightAssessment, PlaywrightEvaluation
-from .schema import TriageResult
+from .guardrails import GuardrailsValidator, get_guardrails_validator
+from .schema import TriageLLMResponse, TriageResult
 
 
 class LLMError(Exception):
@@ -21,11 +23,17 @@ class LLMError(Exception):
 class LLMTriageClient:
     """Client for LLM-based email triage using OpenAI SDK."""
 
-    def __init__(self, config: LLMConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: LLMConfig | None = None,
+        guardrails: GuardrailsValidator | None = None,
+    ) -> None:
         self.config = config or LLMConfig.from_env()
+        self.guardrails = guardrails or get_guardrails_validator()
         if not self.config.api_key:
             raise LLMError(
-                "HELPDESK_AGENT_LLM_API_KEY environment variable is required. Set it to your Bedrock gateway auth token or OpenAI API key."
+                "HELPDESK_AGENT_LLM_API_KEY environment variable is required. "
+                "Set it to your Bedrock gateway auth token or OpenAI API key."
             )
 
         self.client = AsyncOpenAI(
@@ -35,7 +43,11 @@ class LLMTriageClient:
         )
 
     async def _complete_json(
-        self, name: str, messages: list[ChatCompletionMessageParam], empty_message: str
+        self,
+        name: str,
+        messages: list[ChatCompletionMessageParam],
+        empty_message: str,
+        output_model: type[BaseModel],
     ) -> dict[str, Any]:
         with generation(name, self.config.model, messages) as span:
             response = await self.client.chat.completions.create(
@@ -51,6 +63,7 @@ class LLMTriageClient:
             data = json.loads(content)
             if not isinstance(data, dict):
                 raise LLMError("LLM returned a non-object JSON response")
+            await self.guardrails.validate_output(content, output_model)
             return data
 
     async def triage_email(
@@ -75,8 +88,8 @@ class LLMTriageClient:
         """
         history_context = ""
         if history_snippets:
-            history_context = (
-                "\n\nUntrusted ticket history and related-case context:\n" + "\n---\n".join(history_snippets)
+            history_context = "\n\nUntrusted ticket history and related-case context:\n" + "\n---\n".join(
+                history_snippets
             )
 
         prompt = f"""You are a helpdesk triage assistant. Analyze the following email and provide structured \
@@ -100,6 +113,13 @@ Respond with a JSON object containing:
 Only respond with valid JSON, no additional text."""
 
         try:
+            await self.guardrails.validate_input(
+                {
+                    "subject": subject,
+                    "body": body,
+                    **{f"history_{index}": snippet for index, snippet in enumerate(history_snippets or [])},
+                }
+            )
             data = await self._complete_json(
                 "llm.triage_email",
                 messages=[
@@ -117,6 +137,7 @@ Only respond with valid JSON, no additional text."""
                     {"role": "user", "content": prompt},
                 ],
                 empty_message="LLM returned empty response",
+                output_model=TriageLLMResponse,
             )
 
             return TriageResult(
@@ -170,6 +191,7 @@ Return only JSON with these fields:
 - missing_info: array of missing details, if needed"""
 
         try:
+            await self.guardrails.validate_input({"subject": subject, "body": body, "triage_summary": triage_summary})
             data = await self._complete_json(
                 "llm.assess_playwright_validation",
                 messages=[
@@ -184,6 +206,7 @@ Return only JSON with these fields:
                     {"role": "user", "content": prompt},
                 ],
                 empty_message="LLM returned empty Playwright assessment",
+                output_model=PlaywrightAssessment,
             )
             return PlaywrightAssessment.model_validate(data)
         except json.JSONDecodeError as exc:
@@ -212,6 +235,7 @@ Return only JSON with:
 - summary: concise evidence-based explanation; do not claim more than the observations show"""
 
         try:
+            await self.guardrails.validate_input({"expected_error": expected_error, "evidence": evidence})
             data = await self._complete_json(
                 "llm.evaluate_playwright_validation",
                 messages=[
@@ -222,6 +246,7 @@ Return only JSON with:
                     {"role": "user", "content": prompt},
                 ],
                 empty_message="LLM returned empty Playwright evaluation",
+                output_model=PlaywrightEvaluation,
             )
             return PlaywrightEvaluation.model_validate(data)
         except json.JSONDecodeError as exc:

@@ -104,17 +104,26 @@ def test_secret_failure_does_not_break_startup_or_log_secret(monkeypatch, caplog
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method,payload", [
-    ("triage_email", {"summary": "Login problem", "confidence": 0.9}),
-    ("assess_playwright_validation", {"decision": "not_applicable", "reason": "No URL"}),
-    ("evaluate_playwright_validation", {"status": "inconclusive", "summary": "No evidence"}),
-])
+@pytest.mark.parametrize(
+    "method,payload",
+    [
+        ("triage_email", {"summary": "Login problem", "confidence": 0.9}),
+        ("assess_playwright_validation", {"decision": "not_applicable", "reason": "No URL"}),
+        ("evaluate_playwright_validation", {"status": "inconclusive", "summary": "No evidence"}),
+    ],
+)
 async def test_real_llm_methods_emit_one_generation(spans, method, payload):
     response = MagicMock()
     response.choices[0].message.content = json.dumps(payload)
     response.model = "test-model"
     response.usage = None
-    client = LLMTriageClient(LLMConfig(api_key="test-api-key", model="test-model"))
+    guardrails = MagicMock()
+    guardrails.validate_input = AsyncMock()
+    guardrails.validate_output = AsyncMock()
+    client = LLMTriageClient(
+        LLMConfig(api_key="test-api-key", model="test-model"),
+        guardrails=guardrails,
+    )
     client.client.chat.completions.create = AsyncMock(return_value=response)
     arguments = ["Subject", "Body"] if method != "assess_playwright_validation" else ["Subject", "Body", "Summary"]
     await getattr(client, method)(*arguments)
@@ -134,7 +143,10 @@ async def test_invalid_llm_json_marks_generation_failed(spans):
     response.choices[0].message.content = "invalid JSON"
     response.model = "test-model"
     response.usage = None
-    client = LLMTriageClient(LLMConfig(api_key="test-api-key"))
+    guardrails = MagicMock()
+    guardrails.validate_input = AsyncMock()
+    guardrails.validate_output = AsyncMock()
+    client = LLMTriageClient(LLMConfig(api_key="test-api-key"), guardrails=guardrails)
     client.client.chat.completions.create = AsyncMock(return_value=response)
     with pytest.raises(LLMError, match="invalid JSON"):
         await client.triage_email("Subject", "Body")
@@ -191,7 +203,8 @@ def test_real_fastapi_request_parent_is_exported_and_health_is_excluded():
     assert observability._should_export_span(parent)
     assert all(
         not observability._should_export_span(span)
-        for span in exporter.get_finished_spans() if span.kind != SpanKind.SERVER
+        for span in exporter.get_finished_spans()
+        if span.kind != SpanKind.SERVER
     )
     provider.shutdown()
 

@@ -276,6 +276,20 @@ when necessary. No live credentials are checked during application startup.
 To roll back, set `HELPDESK_AGENT_LANGFUSE_ENABLED=0` and restart/redeploy the
 runtime. Restore ADOT separately if you need its built-in tracing again.
 
+### Guardrails AI
+
+Guardrails is active for triage and both browser-validation model calls. It
+validates generated JSON against Pydantic schemas and uses lightweight local
+patterns for common prompt-injection phrases, email/phone/secret-like PII, and a
+small set of abusive terms. Input PII is logged by field name only and does not
+block a ticket; matching output PII or abusive terms are rejected. No ML models,
+hosted validators, or validator credentials are required.
+
+These pattern checks are intentionally lightweight and can miss novel attacks,
+PII types such as names, or toxic language outside the configured terms. Treat
+ticket text as untrusted data and retain the existing tool authorization and URL
+allowlist checks independently.
+
 ### Required
 
 - `HELPDESK_AGENT_LLM_API_KEY` - OpenAI API key (required)

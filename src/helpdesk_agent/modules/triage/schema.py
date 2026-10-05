@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+
+class TriageLLMResponse(BaseModel):
+    """Constrained response contract for the triage model."""
+
+    service: Literal["jira", "slack", "email", "identity", "platform", "prometheus", "unknown"]
+    issue_type: Literal["access", "incident", "performance", "deployment", "general"]
+    priority: Literal["critical", "high", "medium", "low"]
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    missing_info: list[str] = Field(default_factory=list)
+    clarifying_questions: list[str] = Field(default_factory=list)
+    summary: str
 
 
 class TriageResult(BaseModel):

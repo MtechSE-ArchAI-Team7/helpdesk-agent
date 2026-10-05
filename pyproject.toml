@@ -12,6 +12,7 @@ dependencies = [
   "boto3>=1.43.97",
   "fastapi>=0.116.0",
   "fastmcp>=3.4.7",
+  "guardrails-ai>=0.11.0,<0.12",
   "langfuse>=4.0,<5",
   "langgraph>=0.2.0",
   "mcp>=1.10.0",
@@ -94,7 +95,13 @@ packages = ["helpdesk_agent"]
 # boto3/botocore ship no type stubs; imports are lazy (AgentCore transport and
 # the Lambda handler) and exercised via tests with fakes.
 [[tool.mypy.overrides]]
-module = ["boto3", "botocore", "botocore.*"]
+module = [
+  "boto3",
+  "botocore",
+  "botocore.*",
+  "guardrails",
+  "guardrails.*",
+]
 ignore_missing_imports = true
 
 [tool.vercel]
