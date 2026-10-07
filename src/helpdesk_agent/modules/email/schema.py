@@ -142,6 +142,7 @@ class EmailWebhook(BaseModel):
 
 class WebhookResponse(BaseModel):
     case_id: str
+    run_id: str
     summary: str
     service: str
     current_step: str
@@ -153,3 +154,4 @@ class WebhookResponse(BaseModel):
     triage: dict[str, Any] | None = None
     faq_matches: list[dict[str, Any]] = Field(default_factory=list)
     clarification: dict[str, Any] | None = None
+    events: list[dict[str, Any]] = Field(default_factory=list)

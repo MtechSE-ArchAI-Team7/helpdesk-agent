@@ -1,3 +1,4 @@
+import json
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -6,6 +7,7 @@ import pytest
 from helpdesk_agent.config import MCPConfig, TriageConfig
 from helpdesk_agent.core.workflow import HelpdeskWorkflow
 from helpdesk_agent.mcp import MCPProxyAdapter, MCPResponse
+from helpdesk_agent.models import WorkflowState
 from helpdesk_agent.modules.playwright import PlaywrightAssessment, PlaywrightEvaluation, PlaywrightValidationFlow
 from helpdesk_agent.modules.ticketing.service import extract_ticket_id
 from helpdesk_agent.modules.triage.schema import TriageResult
@@ -62,6 +64,19 @@ async def test_new_issue_creates_ticket_and_diagnoses(mock_llm_client) -> None:
     assert "triage" in steps
     assert "update_ticket" in steps
     assert "diagnose" in steps
+    assert state.events[0]["action"] == "run.started"
+    assert state.events[-1]["action"] == "run.finished"
+    assert state.events[-1]["details"]["terminal_outcome"] == "diagnosis_required"
+    assert len({event["case_id"] for event in state.events}) == 1
+    assert any(
+        event["action"] == "gate.decision"
+        and event["details"].get("reason_code") == "faq_search_failed"
+        for event in state.events
+    )
+    assert all(event["case_id"].startswith("case-") for event in state.events)
+    serialized_events = json.dumps(state.events)
+    assert "test@example.com" not in serialized_events
+    assert "Password reset" not in serialized_events
 
 
 @pytest.mark.asyncio
@@ -331,7 +346,7 @@ async def test_clarification_round_cap_escalates_to_diagnosis(mock_llm_client) -
 def test_clarification_round_cap_routes_eligible_case_to_playwright(mock_llm_client) -> None:
     workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
     state = {
-        "workflow_state": MagicMock(case_id="HELP-56"),
+        "workflow_state": WorkflowState(case_id="HELP-56", summary="Test case"),
         "initial_input": {},
         "triage_result": _triage_result(confidence=0.2, missing_info=["still unclear"]),
         "faq_results": None,
@@ -360,7 +375,7 @@ def test_custom_clarification_round_cap_is_used(mock_llm_client) -> None:
         triage_config=TriageConfig(max_clarification_rounds=3),
     )
     state = {
-        "workflow_state": MagicMock(case_id="HELP-57"),
+        "workflow_state": WorkflowState(case_id="HELP-57", summary="Test case"),
         "initial_input": {},
         "triage_result": _triage_result(confidence=0.2, missing_info=["still unclear"]),
         "faq_results": None,

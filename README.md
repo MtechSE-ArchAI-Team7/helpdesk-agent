@@ -206,6 +206,25 @@ Instrumented surfaces: inbound FastAPI requests (health probes excluded) and
 outbound httpx calls (OpenAI SDK, MCP adapters). Use
 `helpdesk_agent.observability.get_tracer()` for custom spans in workflow code.
 
+### Operator workflow events
+
+The helpdesk workflow emits versioned `agent_event=` JSON records for each run,
+named workflow step, and the clarification/FAQ routing gates. Records include
+timestamps, run IDs, a SHA-256-derived case reference, the active trace ID when
+available, actor category, status, duration, structured triage fields, and
+allowlisted rule/threshold outcomes. They are written to the normal application
+log stream so a separately authorized operator gateway can query the configured
+CloudWatch log group. The email webhook response also includes `run_id` and the
+structured `events` array for callers that already receive the completed result.
+
+These operator events intentionally omit ticket body text, sender addresses,
+model prompts/responses, hidden chain-of-thought, and browser page contents.
+Existing application logs and optional Langfuse full-content capture have
+separate data-handling behavior; configuring the operator gateway does not make
+those sources redacted. A run can only appear in the live UI after its events
+reach the configured log group, and missing/expired telemetry must not be
+interpreted as proof that an action did not occur.
+
 ### Langfuse Cloud EU
 
 Langfuse is optional and disabled by default. When enabled, the SDK shares the

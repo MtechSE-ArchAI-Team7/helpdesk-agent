@@ -27,7 +27,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
 from langfuse import Langfuse
@@ -38,6 +38,9 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from .config import LangfuseConfig
+
+if TYPE_CHECKING:
+    from .models import WorkflowState
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,32 @@ def flush_observability() -> None:
 def capture_content(span: trace.Span, direction: str, value: Any) -> None:
     if _langfuse_client is not None and span.is_recording():
         span.set_attribute(f"langfuse.observation.{direction}", json.dumps(value, default=str))
+
+
+def emit_workflow_event(
+    state: WorkflowState,
+    *,
+    event_type: str,
+    stage: str,
+    actor_type: str,
+    status: str,
+    summary: str,
+    duration_ms: int | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    span_context = trace.get_current_span().get_span_context()
+    trace_id = format(span_context.trace_id, "032x") if span_context.trace_id else None
+    event = state.record_event(
+        event_type=event_type,
+        stage=stage,
+        actor_type=actor_type,
+        status=status,
+        summary=summary,
+        trace_id=trace_id,
+        duration_ms=duration_ms,
+        details=details,
+    )
+    logger.info("agent_event=%s", json.dumps(event, separators=(",", ":"), sort_keys=True))
 
 
 @contextmanager

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Coroutine
 from functools import wraps
-from typing import Any, ParamSpec, TypeVar, TypedDict
+from typing import Any, ParamSpec, TypedDict, TypeVar
 from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
@@ -23,9 +24,10 @@ from ..modules.playwright import PlaywrightAssessment, PlaywrightValidationFlow
 from ..modules.ticketing.service import JiraTicketFlow, extract_ticket_id
 from ..modules.triage.llm import LLMError, LLMTriageClient
 from ..modules.triage.schema import TriageResult
-from ..observability import capture_content, operation_span
+from ..observability import capture_content, emit_workflow_event, operation_span
 
 logger = logging.getLogger(__name__)
+_EVENT_IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 #: Marker used in Jira comments so clarification rounds can be counted from the ticket.
 CLARIFICATION_COMMENT_MARKER = "pending clarifications"
@@ -73,7 +75,34 @@ def _trace_step(
                 capture_content(span, "input", {
                     key: request[key] for key in ("subject", "body", "summary", "source") if key in request
                 })
-                result = await function(*args, **kwargs)
+                stage = name.removeprefix("workflow.")
+                event_state = previous if isinstance(previous, WorkflowState) else None
+                actor_type = _event_actor_type(stage)
+                started = time.perf_counter()
+                if event_state is not None:
+                    emit_workflow_event(
+                        event_state,
+                        event_type="step.started",
+                        stage=stage,
+                        actor_type=actor_type,
+                        status="STARTED",
+                        summary=f"{stage.replace('_', ' ').title()} started",
+                    )
+                try:
+                    result = await function(*args, **kwargs)
+                except Exception as exc:
+                    if event_state is not None:
+                        emit_workflow_event(
+                            event_state,
+                            event_type="step.finished",
+                            stage=stage,
+                            actor_type=actor_type,
+                            status="FAILED",
+                            summary=f"{stage.replace('_', ' ').title()} failed",
+                            duration_ms=round((time.perf_counter() - started) * 1000),
+                            details={"failure_type": type(exc).__name__},
+                        )
+                    raise
                 current = result.get("workflow_state") if isinstance(result, dict) else result
                 if isinstance(current, WorkflowState):
                     span.set_attribute("helpdesk.case_id", current.case_id)
@@ -90,11 +119,150 @@ def _trace_step(
                     })
                     if any(entry["status"] == "failed" for entry in current.history[history_start:]):
                         span.set_status(Status(StatusCode.ERROR, "Workflow operation reported failure"))
+                    history = current.history[history_start:]
+                    status = "FAILED" if any(entry["status"] == "failed" for entry in history) else "COMPLETED"
+                    if history and all(entry["status"] == "skipped" for entry in history):
+                        status = "SKIPPED"
+                    details: dict[str, Any] = {
+                        "current_step": current.current_step,
+                        "history_entries": len(history),
+                        "operation_statuses": [
+                            f"{entry['step']}={entry['status']}"
+                            for entry in history
+                            if entry.get("step") in {
+                                "load_ticket",
+                                "create_ticket",
+                                "acknowledge",
+                                "triage",
+                                "update_ticket",
+                                "playwright_assessment",
+                                "playwright_validation",
+                                "clarify",
+                                "faq_gate",
+                                "resolve_faq",
+                                "diagnose",
+                                "email_read",
+                                "memory_history",
+                                "memory_similar",
+                                "memory_save_user",
+                                "memory_snapshot",
+                            }
+                            and entry.get("status") in {
+                                "started",
+                                "completed",
+                                "failed",
+                                "skipped",
+                                "mocked",
+                                "created",
+                                "updated",
+                                "commented",
+                                "sent",
+                                "handoff_submitted",
+                                "handoff_failed",
+                                "success",
+                            }
+                        ],
+                    }
+                    if ticket_id:
+                        details["ticket_id"] = ticket_id
+                    if stage == "triage" and current.triage:
+                        details.update(
+                            {
+                                key: current.triage[key]
+                                for key in ("service", "issue_type", "priority", "confidence")
+                                if key in current.triage
+                            }
+                        )
+                        details["missing_info_count"] = len(current.triage.get("missing_info", []))
+                    elif stage == "faq_gate":
+                        details["faq_result_count"] = len(current.faq_matches)
+                    elif stage == "assess_playwright" and isinstance(result, dict):
+                        assessment = result.get("playwright_assessment")
+                        if assessment is not None:
+                            details["browser_decision"] = assessment.decision
+                    elif stage == "playwright_validate" and isinstance(result, dict):
+                        validation = result.get("playwright_validation")
+                        if isinstance(validation, dict):
+                            if validation.get("status") in {"completed", "failed"}:
+                                details["browser_status"] = validation["status"]
+                            details["tool_statuses"] = [
+                                f"{item.get('tool')}={item.get('status')}"
+                                for item in validation.get("tool_statuses", [])
+                                if isinstance(item, dict)
+                                and item.get("tool") in {
+                                    "browser_navigate",
+                                    "browser_snapshot",
+                                    "browser_console_messages",
+                                    "browser_network_requests",
+                                }
+                                and item.get("status") in {"completed", "failed"}
+                            ]
+                    elif stage == "diagnose":
+                        handoff = current.metadata.get("diagnosis_trigger", {})
+                        if isinstance(handoff, dict):
+                            if isinstance(handoff.get("submitted"), bool):
+                                details["handoff_submitted"] = handoff["submitted"]
+                            for key in ("task_id", "run_id"):
+                                value = handoff.get(key)
+                                if isinstance(value, str) and _EVENT_IDENTIFIER.fullmatch(value):
+                                    details[f"diagnosis_{key}"] = value
+                    elif stage == "helpdesk.workflow":
+                        details["terminal_outcome"] = current.current_step
+                    if stage != "helpdesk.workflow":
+                        emit_workflow_event(
+                            current,
+                            event_type="step.finished",
+                            stage=stage,
+                            actor_type=actor_type,
+                            status=status,
+                            summary=f"{stage.replace('_', ' ').title()} {status.lower()}",
+                            duration_ms=round((time.perf_counter() - started) * 1000),
+                            details=details,
+                        )
                 return result
 
         return wrapped
 
     return decorate
+
+
+def _event_actor_type(stage: str) -> str:
+    if stage in {"triage", "assess_playwright", "clarify", "resolve_faq"}:
+        return "MODEL_ASSISTED"
+    if stage in {
+        "load_ticket",
+        "create_ticket",
+        "acknowledge",
+        "update_ticket",
+        "playwright_validate",
+        "faq_gate",
+        "diagnose",
+        "email_read",
+    }:
+        return "TOOL"
+    return "DETERMINISTIC"
+
+
+def _record_gate_decision(
+    state: GraphState,
+    *,
+    stage: str,
+    decision: str,
+    reason_code: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    workflow_state = state["workflow_state"]
+    if not isinstance(workflow_state, WorkflowState):
+        raise TypeError("Workflow gate decisions require a WorkflowState")
+    emit_workflow_event(
+        workflow_state,
+        event_type="gate.decision",
+        stage=stage,
+        actor_type="DETERMINISTIC",
+        status="DECIDED",
+        summary=f"{stage.replace('_', ' ').title()} selected {decision.replace('_', ' ')}",
+        details={"decision": decision, "reason_code": reason_code, **(details or {})},
+    )
 
 
 class HelpdeskWorkflow:
@@ -645,6 +813,12 @@ class HelpdeskWorkflow:
         case_id = state["workflow_state"].case_id
         triage_result = state.get("triage_result")
         if not triage_result:
+            _record_gate_decision(
+                state,
+                stage="clarification_gate",
+                decision="faq_gate",
+                reason_code="no_triage_result",
+            )
             logger.info("case=%s gate=clarification decision=faq_gate reason=no_triage_result", case_id)
             return "faq_gate"
 
@@ -657,8 +831,26 @@ class HelpdeskWorkflow:
         )
         if not needs_clarification:
             if assessment and assessment.decision == "eligible":
+                _record_gate_decision(
+                    state,
+                    stage="clarification_gate",
+                    decision="playwright",
+                    reason_code="browser_check_eligible",
+                    details={"confidence": triage_result.confidence, "confidence_threshold": threshold},
+                )
                 logger.info("case=%s gate=clarification decision=playwright reason=eligible", case_id)
                 return "playwright"
+            _record_gate_decision(
+                state,
+                stage="clarification_gate",
+                decision="faq_gate",
+                reason_code="confidence_and_information_sufficient",
+                details={
+                    "confidence": triage_result.confidence,
+                    "confidence_threshold": threshold,
+                    "missing_info_count": len(triage_result.missing_info),
+                },
+            )
             logger.info(
                 "case=%s gate=clarification decision=faq_gate reason=confident confidence=%.2f threshold=%.2f",
                 case_id,
@@ -671,6 +863,16 @@ class HelpdeskWorkflow:
         max_rounds = self.triage_config.max_clarification_rounds
         if rounds >= max_rounds:
             if assessment and assessment.decision == "eligible" and assessment.target_url:
+                _record_gate_decision(
+                    state,
+                    stage="clarification_gate",
+                    decision="playwright",
+                    reason_code="clarification_round_limit_reached_browser_check_eligible",
+                    details={
+                        "clarification_round": rounds,
+                        "max_clarification_rounds": max_rounds,
+                    },
+                )
                 logger.info(
                     "case=%s gate=clarification decision=playwright reason=max_rounds rounds=%d max=%d",
                     case_id,
@@ -678,6 +880,16 @@ class HelpdeskWorkflow:
                     max_rounds,
                 )
                 return "playwright"
+            _record_gate_decision(
+                state,
+                stage="clarification_gate",
+                decision="diagnose",
+                reason_code="clarification_round_limit_reached",
+                details={
+                    "clarification_round": rounds,
+                    "max_clarification_rounds": max_rounds,
+                },
+            )
             logger.info(
                 "case=%s gate=clarification decision=diagnose reason=max_rounds rounds=%d max=%d",
                 case_id,
@@ -686,6 +898,19 @@ class HelpdeskWorkflow:
             )
             return "diagnose"
 
+        _record_gate_decision(
+            state,
+            stage="clarification_gate",
+            decision="clarify",
+            reason_code="confidence_low_or_information_missing",
+            details={
+                "confidence": triage_result.confidence,
+                "confidence_threshold": threshold,
+                "missing_info_count": len(triage_result.missing_info),
+                "clarification_round": rounds,
+                "max_clarification_rounds": max_rounds,
+            },
+        )
         logger.info(
             "case=%s gate=clarification decision=clarify reason=needs_clarification "
             "confidence=%.2f threshold=%.2f missing_info=%d rounds=%d",
@@ -939,11 +1164,24 @@ class HelpdeskWorkflow:
         case_id = state["workflow_state"].case_id
         faq_results = state.get("faq_results") or {}
         if faq_results.get("status") != "success":
+            _record_gate_decision(
+                state,
+                stage="faq_gate",
+                decision="diagnose",
+                reason_code="faq_search_failed",
+            )
             logger.info("case=%s gate=faq decision=diagnose reason=faq_search_failed", case_id)
             return "diagnose"
 
         results = faq_results.get("results", [])
         if not results:
+            _record_gate_decision(
+                state,
+                stage="faq_gate",
+                decision="diagnose",
+                reason_code="no_faq_matches",
+                details={"faq_result_count": 0},
+            )
             logger.info("case=%s gate=faq decision=diagnose reason=no_faq_matches", case_id)
             return "diagnose"
 
@@ -951,6 +1189,17 @@ class HelpdeskWorkflow:
         threshold = self.triage_config.faq_relevance_threshold
         top_result = results[0]
         if top_result.get("score", 0) >= threshold:
+            _record_gate_decision(
+                state,
+                stage="faq_gate",
+                decision="resolve_faq",
+                reason_code="top_match_met_relevance_threshold",
+                details={
+                    "faq_score": top_result.get("score", 0),
+                    "faq_threshold": threshold,
+                    "faq_result_count": len(results),
+                },
+            )
             logger.info(
                 "case=%s gate=faq decision=resolve_faq reason=relevant_match score=%.3f threshold=%.2f",
                 case_id,
@@ -958,6 +1207,17 @@ class HelpdeskWorkflow:
                 threshold,
             )
             return "resolve_faq"
+        _record_gate_decision(
+            state,
+            stage="faq_gate",
+            decision="diagnose",
+            reason_code="top_match_below_relevance_threshold",
+            details={
+                "faq_score": top_result.get("score", 0),
+                "faq_threshold": threshold,
+                "faq_result_count": len(results),
+            },
+        )
         logger.info(
             "case=%s gate=faq decision=diagnose reason=below_threshold score=%.3f threshold=%.2f",
             case_id,
@@ -1182,6 +1442,22 @@ class HelpdeskWorkflow:
             metadata=initial_state.get("metadata", {}),
         )
         workflow_state.add_message("user", initial_state.get("summary", ""))
+        event_source = initial_state.get("source")
+        emit_workflow_event(
+            workflow_state,
+            event_type="run.started",
+            stage="intake",
+            actor_type="DETERMINISTIC",
+            status="STARTED",
+            summary="Helpdesk run started",
+            details={
+                "source": (
+                    event_source
+                    if isinstance(event_source, str) and event_source in {"email", "chat", "a2a"}
+                    else "unknown"
+                )
+            },
+        )
 
         case_id = workflow_state.case_id
         logger.info(
@@ -1212,8 +1488,30 @@ class HelpdeskWorkflow:
                     "playwright_validation": None,
                 }
 
-                email_result = await self._email_read_node(email_read_state)
-                return email_result["workflow_state"]
+                try:
+                    email_result = await self._email_read_node(email_read_state)
+                except Exception as exc:
+                    emit_workflow_event(
+                        workflow_state,
+                        event_type="run.finished",
+                        stage="intake",
+                        actor_type="DETERMINISTIC",
+                        status="FAILED",
+                        summary="Helpdesk run failed",
+                        details={"failure_type": type(exc).__name__},
+                    )
+                    raise
+                final_state = email_result["workflow_state"]
+                emit_workflow_event(
+                    final_state,
+                    event_type="run.finished",
+                    stage="intake",
+                    actor_type="DETERMINISTIC",
+                    status="COMPLETED",
+                    summary="Helpdesk run completed",
+                    details={"terminal_outcome": final_state.current_step},
+                )
+                return final_state
 
         # Normal flow: detect/load ticket, then triage
         graph_state: GraphState = {
@@ -1228,10 +1526,31 @@ class HelpdeskWorkflow:
         }
 
         # Run the graph
-        graph_result: GraphState = await self.graph.ainvoke(graph_state)
+        try:
+            graph_result: GraphState = await self.graph.ainvoke(graph_state)
+        except Exception as exc:
+            emit_workflow_event(
+                workflow_state,
+                event_type="run.finished",
+                stage="intake",
+                actor_type="DETERMINISTIC",
+                status="FAILED",
+                summary="Helpdesk run failed",
+                details={"failure_type": type(exc).__name__},
+            )
+            raise
         final_state = graph_result["workflow_state"]
         if self.memory and graph_result.get("ticket_id"):
             await self._save_ticket_memory(graph_result)
+        emit_workflow_event(
+            final_state,
+            event_type="run.finished",
+            stage="intake",
+            actor_type="DETERMINISTIC",
+            status="COMPLETED",
+            summary="Helpdesk run completed",
+            details={"terminal_outcome": final_state.current_step},
+        )
         logger.info(
             "case=%s run=finished current_step=%s ticket=%s",
             final_state.case_id,

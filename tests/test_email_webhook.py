@@ -46,6 +46,12 @@ def test_email_webhook_creates_case_and_ticket() -> None:
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["run_id"]
+    assert payload["events"][0]["action"] == "run.started"
+    assert payload["events"][-1]["action"] == "run.finished"
+    assert "alice@example.com" not in str(payload["events"])
+    assert "12345@example.com" not in str(payload["events"])
+    assert len({event["case_id"] for event in payload["events"]}) == 1
     assert payload["ticket"]["status"] == "mocked"
     assert payload["ticket"]["ticket_id"] == "JIRA-<12345@example.com>"
     # No FAQ match in mocked mode -> ticket marked diagnosis required
