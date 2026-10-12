@@ -226,9 +226,9 @@ def stack(monkeypatch):
     monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", transport)
     monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: Session())
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(services.completion))
-    sdk = AsyncOpenAI(api_key="test-key", http_client=http_client, max_retries=0)
+    sdk = AsyncOpenAI(api_key="placeholder", http_client=http_client, max_retries=0)
     monkeypatch.setattr("helpdesk_agent.modules.triage.llm.AsyncOpenAI", lambda **_: sdk)
-    llm = LLMTriageClient(LLMConfig(api_key="test-key", model="test-model"), guardrails=GuardrailsValidator())
+    llm = LLMTriageClient(LLMConfig(api_key="placeholder", model="test-model"), guardrails=GuardrailsValidator())
     adapter = MCPProxyAdapter(
         MCPConfig(
             atlassian_url="https://jira.example.com/mcp",
@@ -597,7 +597,7 @@ def test_environment_dependency_factories_and_aws_startup_reach_api(stack, monke
         "HELPDESK_AGENT_MEMORY_ID": "HelpdeskMemory-test",
         "HELPDESK_AGENT_MEMORY_REGION": "us-west-2",
         "HELPDESK_AGENT_MEMORY_ORGANIZATION_ID": "acme",
-        "HELPDESK_AGENT_LLM_API_KEY": "test-key",
+        "HELPDESK_AGENT_LLM_API_KEY": "placeholder",
         "HELPDESK_AGENT_A2A_REMOTE_AGENTS": "{}",
         "HELPDESK_AGENT_A2A_REMOTE_AGENT_ARNS": "{}",
         "HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKENS": "{}",

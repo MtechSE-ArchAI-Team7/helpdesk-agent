@@ -61,7 +61,7 @@ class _AllowGuardrails:
 @pytest.mark.asyncio
 async def test_all_llm_methods_run_guardrails(method, args, payload, input_fields, output_model):
     guardrails = _AllowGuardrails()
-    client = LLMTriageClient(LLMConfig(api_key="test-api-key"), guardrails=guardrails)
+    client = LLMTriageClient(LLMConfig(api_key="placeholder"), guardrails=guardrails)
     response = MagicMock()
     response.choices[0].message.content = json.dumps(payload)
     response.model = "test-model"
@@ -85,7 +85,7 @@ async def test_guardrail_rejection_fails_closed(failure_stage):
     else:
         guardrails.validate_output = AsyncMock(side_effect=GuardrailsRejected("Model output rejected"))
 
-    client = LLMTriageClient(LLMConfig(api_key="test-api-key"), guardrails=guardrails)
+    client = LLMTriageClient(LLMConfig(api_key="placeholder"), guardrails=guardrails)
     response = MagicMock()
     response.choices[0].message.content = json.dumps(
         {
@@ -162,7 +162,7 @@ def test_output_schema_is_enforced_by_guardrails():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("expected_error", ["", None])
 async def test_non_browser_assessment_contract(expected_error):
-    client = LLMTriageClient(LLMConfig(api_key="test-api-key"), guardrails=GuardrailsValidator())
+    client = LLMTriageClient(LLMConfig(api_key="placeholder"), guardrails=GuardrailsValidator())
     response = MagicMock()
     response.choices[0].message.content = json.dumps(
         {

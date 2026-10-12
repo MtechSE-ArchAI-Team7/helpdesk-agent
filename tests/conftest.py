@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# Set a dummy API key for tests
-os.environ["HELPDESK_AGENT_LLM_API_KEY"] = "test-api-key"
+# Set a non-secret placeholder API key for tests
+os.environ["HELPDESK_AGENT_LLM_API_KEY"] = "placeholder"
 # Default to MCP disabled so webhook/chat tests get mocked flows unless a
 # test explicitly enables it (e.g. test_mcp.py sets it before importing).
 os.environ.setdefault("HELPDESK_AGENT_USE_MCP", "0")

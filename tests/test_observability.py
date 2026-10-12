@@ -121,7 +121,7 @@ async def test_real_llm_methods_emit_one_generation(spans, method, payload):
     guardrails.validate_input = AsyncMock()
     guardrails.validate_output = AsyncMock()
     client = LLMTriageClient(
-        LLMConfig(api_key="test-api-key", model="test-model"),
+        LLMConfig(api_key="placeholder", model="test-model"),
         guardrails=guardrails,
     )
     client.client.chat.completions.create = AsyncMock(return_value=response)
@@ -146,7 +146,7 @@ async def test_invalid_llm_json_marks_generation_failed(spans):
     guardrails = MagicMock()
     guardrails.validate_input = AsyncMock()
     guardrails.validate_output = AsyncMock()
-    client = LLMTriageClient(LLMConfig(api_key="test-api-key"), guardrails=guardrails)
+    client = LLMTriageClient(LLMConfig(api_key="placeholder"), guardrails=guardrails)
     client.client.chat.completions.create = AsyncMock(return_value=response)
     with pytest.raises(LLMError, match="invalid JSON"):
         await client.triage_email("Subject", "Body")

@@ -16,7 +16,10 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
-RUN useradd --system --uid 10001 --create-home helpdesk-agent
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home helpdesk-agent
 COPY --from=builder --chown=10001:10001 /app /app
 USER 10001:10001
 

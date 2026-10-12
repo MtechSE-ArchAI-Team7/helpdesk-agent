@@ -1,0 +1,68 @@
+name: SCA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sca:
+    name: Snyk SCA
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+      - name: Prepare reports
+        run: mkdir -p reports
+      - name: Set up Node for Snyk
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Install Snyk CLI
+        run: npm install --global snyk@1.1307.4
+      - name: Prepare locked production dependencies for SCA
+        run: |
+          uv export --frozen --no-dev --no-hashes --no-emit-project -o reports/requirements.lock.txt
+          uv venv .snyk-venv --seed --python 3.12
+          uv pip sync --python .snyk-venv/bin/python reports/requirements.lock.txt
+          uv pip install --python .snyk-venv/bin/python 'setuptools<81'
+          .snyk-venv/bin/python -c 'import pip, pkg_resources'
+          .snyk-venv/bin/python -m pip check
+          .snyk-venv/bin/python -m pip freeze --exclude pip --exclude setuptools --exclude wheel > reports/requirements.txt
+      - name: Snyk SCA
+        id: scan
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_CFG_ORG: ${{ vars.SNYK_ORG }}
+        run: |
+          set +e
+          snyk test --file=reports/requirements.txt --package-manager=pip \
+            --command=.snyk-venv/bin/python --json-file-output=reports/snyk-sca.json
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Upload SCA reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-sca-reports
+          path: reports/
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14

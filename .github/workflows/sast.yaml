@@ -1,0 +1,52 @@
+name: SAST
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sast:
+    name: Snyk SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Prepare reports
+        run: mkdir -p reports
+      - name: Set up Node for Snyk
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Install Snyk CLI
+        run: npm install --global snyk@1.1307.4
+      - name: Snyk SAST
+        id: scan
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_CFG_ORG: ${{ vars.SNYK_ORG }}
+        run: |
+          set +e
+          snyk code test . --json-file-output=reports/snyk-sast.json
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Upload SAST reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-sast-reports
+          path: reports/
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14

@@ -445,7 +445,6 @@ jobs:
         run: printf '%s  image.tar\n' "$EXPECTED_SHA256" | sha256sum --check -
       - name: Trivy container image scan
         id: scan
-        continue-on-error: true
         timeout-minutes: 10
         uses: aquasecurity/trivy-action@0.35.0
         with:
@@ -453,10 +452,11 @@ jobs:
           scan-type: image
           scanners: vuln
           vuln-type: os,library
-          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
           format: json
           output: reports/trivy.json
-          exit-code: '0'
+          exit-code: '1'
           timeout: 10m
       - name: Upload Trivy report
         if: always()
@@ -471,7 +471,7 @@ jobs:
   push:
     name: Push to ECR
     needs: [build, trivy]
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.trivy.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
