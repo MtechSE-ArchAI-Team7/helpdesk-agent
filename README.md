@@ -27,7 +27,10 @@ publishing; push failure prevents runtime updates. Credential setup and
 runtime-update errors also fail deployment. Summary runs even after failures.
 
 Unit and integration jobs upload independent coverage data, which SonarQube
-combines into one coverage report. The workflow builds once and exports an image
+combines into one coverage report. Both test jobs upload HTML coverage
+reports and independently check for at least 90% combined statement and branch coverage across
+the entire `helpdesk_agent` package. Coverage below that threshold fails the test
+step but remains advisory, like other test failures. The workflow builds once and exports an image
 archive. Trivy and ECR Push download that same archive and independently verify
 its recorded SHA-256 checksum; Push loads it without rebuilding. Image tags include
 commit SHA, run ID, and run attempt, rather than mutable `latest` or `main` tags.
@@ -56,6 +59,7 @@ Configure these repository **variables**:
 | `SNYK_ORG` | Optional organization ID/slug; otherwise token's preferred organization |
 | `HELPDESK_AGENT_LLM_MODEL` | `gpt-4o-mini` |
 | `HELPDESK_AGENT_LLM_BASE_URL` | Optional OpenAI-compatible gateway URL |
+| `HELPDESK_AGENT_LLM_TEMPERATURE` | Sampling temperature from `0` to `2` (default: `0.1`; use `1` for models that require their default) |
 
 Disable SonarQube Cloud automatic analysis for this project when enabling CI
 analysis. Enable Snyk Code in the selected Snyk organization. Missing scanner or
@@ -96,15 +100,69 @@ uv sync --frozen --group eval
 uv run pytest -m unit --strict-markers
 uv run pytest -m integration --strict-markers
 uv run --group eval pytest evaluations/test_triage.py -m unit
-uv run --group eval deepeval test run evaluations/test_triage.py -m functional
+HELPDESK_AGENT_EVAL_SUITE=testing uv run --group eval deepeval test run evaluations/test_triage.py -m functional
+HELPDESK_AGENT_EVAL_SUITE=evaluation uv run --group eval deepeval test run evaluations/test_triage.py -m functional
 ```
 
-[The initial labelled dataset](evaluations/triage_cases.json) has 12 synthetic,
-explicitly described cases. DeepEval scores exact service/issue-type/priority
-matches without a separate judge model or Confident AI account. This is a smoke
-baseline, not production-quality certification; extend it with reviewed,
-de-identified examples before relying on its quality scores. The eval dependency
-group is excluded from the production image. Live evaluations incur model costs.
+Live DeepEval evaluations use two synthetic datasets:
+
+- [Testing](evaluations/triage_testing.json): 18 quick cases for critical
+  classification, clarification/FAQ routing, history isolation, safe browser
+  feasibility, and conservative browser evidence interpretation. The build
+  pipeline selects this suite explicitly; it is also the local default.
+- [Evaluation](evaluations/triage_evaluation.json): inherits all testing
+  cases and adds 42 cases, for 60 total. Run less frequently (nightly/weekly or
+  before major model/prompt changes). The original 12 explicitly labelled smoke
+  cases are preserved here with `baseline-` IDs. No schedule is enabled automatically.
+
+Every functional case calls the configured live LLM through production prompts
+and guardrails. Set `HELPDESK_AGENT_EVAL_SUITE` to `testing` or `evaluation`;
+unknown values fail collection. Provide `HELPDESK_AGENT_LLM_API_KEY`, plus the
+optional model/base URL settings, in the environment. DeepEval may also autoload
+local `.env` files; set `DEEPEVAL_DISABLE_DOTENV=1` to require explicit environment
+configuration. Each case makes one model call (SDK transport retries may
+add requests), closes its client, and records suite, case, operation, and model
+metadata. API errors and guardrail rejections fail rather than skip.
+
+Exact labels, browser decisions/statuses, and supplied text-pattern assertions
+are scored without a separate judge model or Confident AI account. Each case
+must pass all its assertions; a high average does not hide a failed case.
+Triage expectations may omit ambiguous labels: vague-report cases require
+appropriate clarification/routing without imposing an arbitrary priority.
+Noneligible browser assessments need not clear an explicitly reported URL;
+any returned URL must still come from the current report.
+Text-pattern checks are narrow regression checks, not a semantic safety audit
+or a substitute for human review. Common direct secret-request phrases are also
+rejected. Inputs blocked by guardrails before inference belong in offline tests,
+not these live datasets.
+
+Routing cases feed the actual live triage output into the production
+clarification and FAQ gate methods with explicit threshold, clarification-round,
+browser-assessment, and FAQ-result fixtures. They do not run the entire workflow
+or perform Jira, email, memory, browser, FAQ, or A2A network actions. Browser
+assessment cases test the model's feasibility decision, not host allowlisting;
+allowlist/read-only tool enforcement remains covered by deterministic tests.
+Offline `-m unit` checks validate both datasets, inheritance, dispatch, scoring,
+and routing without contacting a model.
+
+These are initial synthetic regression baselines, not production-quality
+certification. Priority labels need human review against your operational
+impact/urgency policy; the production prompt does not define a full priority
+rubric. Extend with reviewed, de-identified examples and calibrate before making
+scores release gates. The pipeline remains advisory as described above.
+The eval dependency group is excluded from the production image; live runs incur
+model costs.
+
+To produce a standalone local HTML report from a saved DeepEval JSON run:
+
+```bash
+uv run python scripts/render_eval_report.py reports/functional/test_run_<timestamp>.json reports/functional/testing.html
+```
+
+The HTML includes pass/fail counts, a test overview table with scores, durations,
+reasons and links to details, expandable inputs and outputs, and status/operation
+filters applying to both views. It loads no external resources. Treat
+reports as potentially sensitive: they include model inputs and outputs.
 
 ## Architecture
 
@@ -317,6 +375,7 @@ allowlist checks independently.
 
 - `HELPDESK_AGENT_LLM_MODEL` - LLM model (default: `gpt-4o-mini`)
 - `HELPDESK_AGENT_LLM_BASE_URL` - Custom LLM endpoint
+- `HELPDESK_AGENT_LLM_TEMPERATURE` - Sampling temperature from `0` to `2` (default: `0.1`; some models only support `1`)
 - `HELPDESK_AGENT_LLM_TIMEOUT_SECONDS` - LLM request timeout (default: `30.0`)
 - `HELPDESK_AGENT_TRIAGE_CONFIDENCE_THRESHOLD` - Confidence threshold for clarification (default: `0.6`)
 - `HELPDESK_AGENT_FAQ_RELEVANCE_THRESHOLD` - FAQ relevance threshold (default: `0.7`)
@@ -684,12 +743,38 @@ uv run pytest
 # Run with coverage
 uv run pytest --cov=src
 
+# Run isolated unit tests with a 90% coverage threshold and local reports
+COVERAGE_FILE=reports/.coverage.unit uv run --frozen --no-sync pytest -m unit --strict-markers \
+  --junitxml=reports/unit.xml --cov=helpdesk_agent --cov-report=term-missing \
+  --cov-report=html:reports/htmlcov --cov-fail-under=90
+
+# Run integration tests with a 90% coverage threshold and categorized reports
+COVERAGE_FILE=reports/integration/.coverage.integration uv run --frozen --no-sync pytest -m integration --strict-markers \
+  --junitxml=reports/integration/integration.xml --cov=helpdesk_agent --cov-report=term-missing \
+  --cov-report=html:reports/integration/htmlcov \
+  --cov-report=json:reports/integration/integration-coverage.json --cov-fail-under=90
+
 # Run lint
 uv run ruff check .
 
 # Run typecheck
 uv run mypy
 ```
+
+Run `uv sync --frozen` first to install the locked test dependencies. Open
+[the HTML coverage report](reports/htmlcov/index.html) after the unit run to see
+covered and missing statements and branches. [JUnit results](reports/unit.xml)
+and raw coverage data are also saved under the git-ignored `reports/` directory.
+These unit tests mock LLM, MCP, A2A, and AWS boundaries; no production services
+are required. Existing integration tests remain a separate category.
+
+Integration results are stored in [reports/integration/](reports/integration/),
+including [HTML coverage](reports/integration/htmlcov/index.html) and
+[JUnit results](reports/integration/integration.xml). The service integration
+scenarios exercise the real API, workflow, service flows, OpenAI/A2A SDKs,
+Guardrails, memory, and tracing together. Only external HTTP/MCP/AWS boundaries
+are simulated; the tests do not call production services. CI retains these
+reports in the integration artifact and keeps the 90% check advisory.
 
 ## Error Handling
 

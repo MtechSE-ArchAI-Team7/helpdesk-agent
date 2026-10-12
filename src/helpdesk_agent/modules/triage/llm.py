@@ -54,7 +54,7 @@ class LLMTriageClient:
                 model=self.config.model,
                 messages=messages,
                 response_format={"type": "json_object"},
-                temperature=0.1,
+                temperature=self.config.temperature,
             )
             record_generation_response(span, response)
             content = response.choices[0].message.content
@@ -186,9 +186,12 @@ Return only JSON with these fields:
 - decision: "eligible", "needs_info", or "not_applicable"
 - reason: short explanation
 - target_url: exact HTTPS URL from the report, or null
-- expected_error: short description of the error the check should look for
-- clarifying_questions: array of safe questions, if needed
-- missing_info: array of missing details, if needed"""
+- expected_error: a string describing the error the check should look for; use "" if no error applies, never null
+- clarifying_questions: array of safe questions; use [] if none are needed, never null
+- missing_info: array of missing details; use [] if none are needed, never null
+
+For "not_applicable", use expected_error "", clarifying_questions [], and missing_info [].
+Only target_url may be null. An "eligible" assessment must have a nonempty expected_error."""
 
         try:
             await self.guardrails.validate_input({"subject": subject, "body": body, "triage_summary": triage_summary})

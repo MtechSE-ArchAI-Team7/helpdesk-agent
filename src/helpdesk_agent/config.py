@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -122,6 +123,11 @@ class LLMConfig:
     model: str = "gpt-4o-mini"
     base_url: str | None = None
     timeout_seconds: float = 30.0
+    temperature: float = 0.1
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.temperature) or not 0.0 <= self.temperature <= 2.0:
+            raise ValueError("HELPDESK_AGENT_LLM_TEMPERATURE must be between 0 and 2")
 
     @staticmethod
     def _normalize_base_url(base_url: str | None) -> str | None:
@@ -149,6 +155,7 @@ class LLMConfig:
             model=os.getenv("HELPDESK_AGENT_LLM_MODEL", "gpt-4o-mini"),
             base_url=cls._normalize_base_url(os.getenv("HELPDESK_AGENT_LLM_BASE_URL")),
             timeout_seconds=float(os.getenv("HELPDESK_AGENT_LLM_TIMEOUT_SECONDS", "30.0")),
+            temperature=float(os.getenv("HELPDESK_AGENT_LLM_TEMPERATURE", "0.1")),
         )
 
 

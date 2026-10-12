@@ -53,7 +53,8 @@ jobs:
           COVERAGE_FILE: reports/.coverage.unit
         run: >-
           uv run --frozen --no-sync pytest -m unit --strict-markers
-          --junitxml=reports/unit.xml --cov=helpdesk_agent --cov-report=
+          --junitxml=reports/unit.xml --cov=helpdesk_agent
+          --cov-report=term-missing --cov-report=html:reports/htmlcov --cov-fail-under=90
       - name: Upload unit reports and coverage
         if: always()
         uses: actions/upload-artifact@v4
@@ -85,7 +86,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
       - name: Prepare reports
-        run: mkdir -p reports
+        run: mkdir -p reports/integration
       - name: Install test dependencies
         id: dependencies
         continue-on-error: true
@@ -95,10 +96,12 @@ jobs:
         continue-on-error: true
         timeout-minutes: 15
         env:
-          COVERAGE_FILE: reports/.coverage.integration
+          COVERAGE_FILE: reports/integration/.coverage.integration
         run: >-
           uv run --frozen --no-sync pytest -m integration --strict-markers
-          --junitxml=reports/integration.xml --cov=helpdesk_agent --cov-report=
+          --junitxml=reports/integration/integration.xml --cov=helpdesk_agent
+          --cov-report=term-missing --cov-report=html:reports/integration/htmlcov
+          --cov-report=json:reports/integration/integration-coverage.json --cov-fail-under=90
       - name: Upload integration reports and coverage
         if: always()
         uses: actions/upload-artifact@v4
@@ -141,7 +144,7 @@ jobs:
         run: >-
           uv run --frozen --no-sync pytest evaluations/test_triage.py -m unit
           --strict-markers --junitxml=reports/evaluation-checks.xml
-      - name: DeepEval functional tests
+      - name: DeepEval testing live tests
         id: tests
         continue-on-error: true
         timeout-minutes: 15
@@ -149,7 +152,9 @@ jobs:
           HELPDESK_AGENT_LLM_API_KEY: ${{ secrets.HELPDESK_AGENT_LLM_API_KEY }}
           HELPDESK_AGENT_LLM_MODEL: ${{ vars.HELPDESK_AGENT_LLM_MODEL || 'gpt-4o-mini' }}
           HELPDESK_AGENT_LLM_BASE_URL: ${{ vars.HELPDESK_AGENT_LLM_BASE_URL }}
+          HELPDESK_AGENT_LLM_TEMPERATURE: ${{ vars.HELPDESK_AGENT_LLM_TEMPERATURE || '0.1' }}
           HELPDESK_AGENT_LLM_TIMEOUT_SECONDS: '30'
+          HELPDESK_AGENT_EVAL_SUITE: testing
           PYTEST_ADDOPTS: --junitxml=reports/functional.xml --strict-markers
         run: uv run --frozen --no-sync deepeval test run evaluations/test_triage.py -m functional
       - name: Upload functional reports
@@ -206,7 +211,7 @@ jobs:
         id: coverage
         continue-on-error: true
         run: |
-          uv run --frozen --no-sync coverage combine --keep reports
+          uv run --frozen --no-sync coverage combine --keep reports reports/integration
           uv run --frozen --no-sync coverage xml -o reports/coverage.xml
       - name: SonarQube Cloud code quality
         id: scan

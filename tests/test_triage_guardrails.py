@@ -157,3 +157,40 @@ def test_output_schema_is_enforced_by_guardrails():
 
     with pytest.raises(GuardrailsRejected):
         validator._validate_output(json.dumps(payload), TriageLLMResponse)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expected_error", ["", None])
+async def test_non_browser_assessment_contract(expected_error):
+    client = LLMTriageClient(LLMConfig(api_key="test-api-key"), guardrails=GuardrailsValidator())
+    response = MagicMock()
+    response.choices[0].message.content = json.dumps(
+        {
+            "decision": "not_applicable",
+            "reason": "Offline compilation is not browser-visible.",
+            "target_url": None,
+            "expected_error": expected_error,
+            "clarifying_questions": [],
+            "missing_info": [],
+        }
+    )
+    response.model = "test-model"
+    response.usage = None
+    client.client.chat.completions.create = AsyncMock(return_value=response)
+    try:
+        if expected_error is None:
+            with pytest.raises(LLMError, match="schema"):
+                await client.assess_playwright_validation("Compile failure", "Offline compiler fails", "Local failure")
+        else:
+            result = await client.assess_playwright_validation(
+                "Compile failure",
+                "Offline compiler fails",
+                "Local failure",
+            )
+            assert result.decision == "not_applicable"
+            assert result.expected_error == ""
+        prompt = client.client.chat.completions.create.await_args.kwargs["messages"][1]["content"]
+        assert 'use "" if no error applies, never null' in prompt
+        assert "Only target_url may be null" in prompt
+    finally:
+        await client.client.close()
