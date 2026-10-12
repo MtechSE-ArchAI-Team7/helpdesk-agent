@@ -11,7 +11,7 @@ dependencies = [
   # ARN (imported lazily); required in the deployed image.
   "boto3>=1.43.97",
   "fastapi>=0.116.0",
-  "fastmcp>=3.4.7",
+  "fastmcp-slim>=3.4.7",
   "guardrails-ai>=0.11.0,<0.12",
   "langfuse>=4.0,<5",
   "langgraph>=0.2.0",
