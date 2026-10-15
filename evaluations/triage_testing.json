@@ -65,7 +65,7 @@
       "id": "faq-at-threshold-resolves",
       "operation": "triage",
       "subject": "Prometheus documentation",
-      "body": "Please send the general getting-started documentation for creating dashboards backed by Prometheus. I want the organization-wide guide, not documentation for a particular dashboard or team. Nothing is broken.",
+      "body": "Please reply to this email with the standard getting-started steps for creating a dashboard backed by Prometheus, using our organization-wide guide at https://docs.example.com/prometheus/dashboards/getting-started. This is a general documentation request, not about a particular dashboard or team. Plain-text steps in the email reply are the requested format and delivery method; no attachment or customized setup instructions are needed. Nothing is broken.",
       "routing": {"faq_score": 0.7},
       "expected": {"service": "prometheus", "issue_type": "general", "priority": "low", "route": "resolve_faq"}
     },
@@ -73,7 +73,7 @@
       "id": "faq-below-threshold-diagnoses",
       "operation": "triage",
       "subject": "Prometheus documentation",
-      "body": "Please send the general getting-started documentation for creating dashboards backed by Prometheus. I want the organization-wide guide, not documentation for a particular dashboard or team. Nothing is broken.",
+      "body": "Please reply to this email with the standard getting-started steps for creating a dashboard backed by Prometheus, using our organization-wide guide at https://docs.example.com/prometheus/dashboards/getting-started. This is a general documentation request, not about a particular dashboard or team. Plain-text steps in the email reply are the requested format and delivery method; no attachment or customized setup instructions are needed. Nothing is broken.",
       "routing": {"faq_score": 0.69},
       "expected": {"service": "prometheus", "issue_type": "general", "priority": "low", "route": "diagnose"}
     },

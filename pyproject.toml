@@ -29,6 +29,7 @@ dependencies = [
 eval = ["deepeval>=3.0,<4"]
 dev = [
   "bandit>=1.8.0",
+  "fastmcp-slim[server]>=3.4.7",
   "hatchling>=1.28.0",
   "httpx>=0.28.0",
   "mypy>=1.16.0",
@@ -42,6 +43,7 @@ dev = [
 [project.optional-dependencies]
 dev = [
   "bandit>=1.8.0",
+  "fastmcp-slim[server]>=3.4.7",
   "hatchling>=1.28.0",
   "httpx>=0.28.0",
   "mypy>=1.16.0",

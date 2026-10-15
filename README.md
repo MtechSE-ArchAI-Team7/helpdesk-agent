@@ -764,7 +764,10 @@ uv run ruff check .
 uv run mypy
 ```
 
-Run `uv sync --frozen` first to install the locked test dependencies. Open
+Run `uv sync --frozen` first to install the locked test dependencies, including
+`fastmcp-slim[server]` in the dev group for the local mock MCP server. Production
+keeps the slim package without server extras; installing production dependencies
+alone is insufficient to collect tests that import `MockMCPServer`. Open
 [the HTML coverage report](reports/htmlcov/index.html) after the unit run to see
 covered and missing statements and branches. [JUnit results](reports/unit.xml)
 and raw coverage data are also saved under the git-ignored `reports/` directory.
