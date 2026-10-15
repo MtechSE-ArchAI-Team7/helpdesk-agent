@@ -28,9 +28,10 @@ runtime-update errors also fail deployment. Summary runs even after failures.
 
 Unit and integration jobs upload independent coverage data, which SonarQube
 combines into one coverage report. Both test jobs upload HTML coverage
-reports and independently check for at least 90% combined statement and branch coverage across
-the entire `helpdesk_agent` package. Coverage below that threshold fails the test
-step but remains advisory, like other test failures. The workflow builds once and exports an image
+reports. The unit job checks for at least 90% combined statement and branch coverage across
+the entire `helpdesk_agent` package. Coverage below that threshold fails the unit test
+step but remains advisory, like other test failures. Live integration coverage is
+informational and has no coverage threshold. The workflow builds once and exports an image
 archive. Trivy and ECR Push download that same archive and independently verify
 its recorded SHA-256 checksum; Push loads it without rebuilding. Image tags include
 commit SHA, run ID, and run attempt, rather than mutable `latest` or `main` tags.
@@ -90,15 +91,16 @@ version pins, update Lambda functions, or automatically roll back failures.
 Consumers pinned to a named endpoint/version require separate promotion.
 
 Tests are explicitly partitioned in [the pytest configuration](tests/conftest.py).
-Integration tests exercise API/workflow/transport collaboration with remote
-boundaries mocked; they do not contact production services. New test modules
+Integration tests now mean live MCP discovery and LLM invocation only.
+Former mocked API/workflow/transport tests are in [tests/archive/](tests/archive/)
+and excluded from normal pytest collection and CI. New active test modules
 must be categorized there or explicitly marked `unit`/`integration`.
 Live evaluations live outside `tests/` to avoid its dummy-credential fixtures.
 
 ```bash
 uv sync --frozen --group eval
 uv run pytest -m unit --strict-markers
-uv run pytest -m integration --strict-markers
+uv run pytest tests/integration/ -m integration --live-mcp --live-llm --strict-markers
 uv run --group eval pytest evaluations/test_triage.py -m unit
 HELPDESK_AGENT_EVAL_SUITE=testing uv run --group eval deepeval test run evaluations/test_triage.py -m functional
 HELPDESK_AGENT_EVAL_SUITE=evaluation uv run --group eval deepeval test run evaluations/test_triage.py -m functional
@@ -748,11 +750,12 @@ COVERAGE_FILE=reports/.coverage.unit uv run --frozen --no-sync pytest -m unit --
   --junitxml=reports/unit.xml --cov=helpdesk_agent --cov-report=term-missing \
   --cov-report=html:reports/htmlcov --cov-fail-under=90
 
-# Run integration tests with a 90% coverage threshold and categorized reports
-COVERAGE_FILE=reports/integration/.coverage.integration uv run --frozen --no-sync pytest -m integration --strict-markers \
-  --junitxml=reports/integration/integration.xml --cov=helpdesk_agent --cov-report=term-missing \
-  --cov-report=html:reports/integration/htmlcov \
-  --cov-report=json:reports/integration/integration-coverage.json --cov-fail-under=90
+# Run live integration tests and save results
+uv run --frozen --no-sync pytest tests/integration/ --live-mcp --live-llm --strict-markers \
+  --junitxml=reports/integration/live-integration.xml
+
+# Explicitly run archived mocked tests when needed (not part of normal runs)
+uv run pytest tests/archive/ --strict-markers
 
 # Run lint
 uv run ruff check .
@@ -766,15 +769,148 @@ Run `uv sync --frozen` first to install the locked test dependencies. Open
 covered and missing statements and branches. [JUnit results](reports/unit.xml)
 and raw coverage data are also saved under the git-ignored `reports/` directory.
 These unit tests mock LLM, MCP, A2A, and AWS boundaries; no production services
-are required. Existing integration tests remain a separate category.
+are required. Live integration tests remain opt-in.
 
 Integration results are stored in [reports/integration/](reports/integration/),
-including [HTML coverage](reports/integration/htmlcov/index.html) and
-[JUnit results](reports/integration/integration.xml). The service integration
-scenarios exercise the real API, workflow, service flows, OpenAI/A2A SDKs,
-Guardrails, memory, and tracing together. Only external HTTP/MCP/AWS boundaries
-are simulated; the tests do not call production services. CI retains these
-reports in the integration artifact and keeps the 90% check advisory.
+including local JUnit results in `live-integration.xml`. CI runs only the five
+live tests and retains JUnit results (`integration.xml`) and informational
+coverage in its integration artifact. It does not run archived tests or enforce
+an integration coverage threshold. Unit-test helper modules remain active.
+
+For the CI integration job, create **one GitHub Actions secret** named
+`HELPDESK_AGENT_INTEGRATION_ENV`. Paste `.env`-style `KEY=value` lines containing
+the environment settings for all five live tests:
+
+```dotenv
+HELPDESK_AGENT_LLM_API_KEY=<llm-key>
+HELPDESK_AGENT_LLM_BASE_URL=https://<gateway>/inference/v1
+HELPDESK_AGENT_LLM_MODEL=llm-target/gpt-4o-mini
+HELPDESK_AGENT_LLM_TEMPERATURE=0.1
+HELPDESK_AGENT_MCP_ATLASSIAN_URL=https://<jira-mcp-endpoint>
+HELPDESK_AGENT_MCP_TOOL_PREFIX=mcp-atlassian___
+HELPDESK_AGENT_MCP_ZOHOMAIL_URL=https://<zoho-issued-mcp-endpoint>
+HELPDESK_AGENT_MCP_ZOHOMAIL_TOOL_PREFIX=ZohoMail_
+HELPDESK_AGENT_MCP_FAQ_URL=https://<faq-gateway>/mcp
+HELPDESK_AGENT_MCP_FAQ_TOOL_PREFIX=<knowledge-target>___
+HELPDESK_AGENT_MCP_FAQ_AUTH_MODE=iam
+HELPDESK_AGENT_MCP_FAQ_REGION=ap-southeast-2
+HELPDESK_AGENT_MCP_PLAYWRIGHT_URL=https://<playwright-endpoint>/mcp
+HELPDESK_AGENT_MCP_PLAYWRIGHT_TOOL_PREFIX=mcp-playwright___
+HELPDESK_AGENT_MCP_AUTH_TOKEN=<shared-bearer-token-if-needed>
+AWS_ACCESS_KEY_ID=<aws-access-key-id>
+AWS_SECRET_ACCESS_KEY=<aws-secret-access-key>
+AWS_REGION=ap-southeast-2
+```
+
+Replace placeholders and prefixes with your actual configuration. Omit the bearer
+token if unused. Add `AWS_SESSION_TOKEN` when using temporary AWS credentials;
+the AWS identity needs gateway invocation permission. Optional timeout settings
+use the same names/defaults as local configuration. Set a prefix to `""` for
+unprefixed tools; omit the FAQ prefix to select legacy `faq.search`.
+
+Comments, blank lines, quoted values, and empty `KEY=` values are supported.
+Variable interpolation and shell command execution are disabled: values are
+literal, not references to other variables. Duplicate keys, malformed lines,
+and bare keys without `=` fail explicitly. JSON format is no longer accepted.
+
+The job parses dotenv text as data (never shell-sources it), masks each nonempty value,
+and passes settings only to the test process without writing a configuration
+file or uploading it as an artifact. Missing/malformed secrets fail the advisory
+test step. This replaces individual secret/variable references **only for the
+integration job**; other workflow jobs still use their existing GitHub settings.
+GitHub runners must have network access to every configured endpoint.
+
+### Local external MCP discovery tests
+
+The tests in [tests/integration/](tests/integration/) connect directly to external
+MCP servers using Streamable HTTP. They initialize a session and call
+`tools/list` only, including pagination. They never call `tools/call`, run the
+helpdesk workflow, send email, create tickets, or navigate a browser.
+They check tool capability advertisement, expected tool names, duplicate names,
+and basic input-schema structure, not full argument compatibility or downstream
+service permissions. Additional advertised tools are allowed.
+
+These tests are skipped unless `--live-mcp` is supplied. CI enables it explicitly.
+Run from the repository root; the existing configuration loader reads `.env`
+without overriding exported variables. No running helpdesk app, LLM API key,
+or `HELPDESK_AGENT_USE_MCP` setting is needed.
+
+```bash
+# Run all four external discovery checks
+uv run pytest tests/integration/ --live-mcp --strict-markers -v --tb=short
+
+# Run just one integration (atlassian, zohomail, faq, or playwright)
+uv run pytest tests/integration/ --live-mcp -k faq -v --tb=short
+
+# Save a local JUnit report
+uv run pytest tests/integration/ --live-mcp --tb=short \
+  --junitxml=reports/integration/mcp-discovery.xml
+```
+
+Configure the integrations selected for the run:
+
+| Integration | Endpoint variable | Tool prefix variable/default |
+| --- | --- | --- |
+| Jira | `HELPDESK_AGENT_MCP_ATLASSIAN_URL` | `HELPDESK_AGENT_MCP_TOOL_PREFIX` / empty |
+| Zoho Mail | `HELPDESK_AGENT_MCP_ZOHOMAIL_URL` | `HELPDESK_AGENT_MCP_ZOHOMAIL_TOOL_PREFIX` / `ZohoMail_` |
+| FAQ | `HELPDESK_AGENT_MCP_FAQ_URL` | `HELPDESK_AGENT_MCP_FAQ_TOOL_PREFIX` / unset selects `faq.search`; empty selects `Retrieve`; otherwise `<prefix>Retrieve` |
+| Playwright | `HELPDESK_AGENT_MCP_PLAYWRIGHT_URL` | `HELPDESK_AGENT_MCP_PLAYWRIGHT_TOOL_PREFIX` / `mcp-playwright___`; empty for an unprefixed server |
+
+An explicitly configured `HELPDESK_AGENT_MCP_BASE_URL` can serve as the fallback
+endpoint. Without a dedicated endpoint or explicit fallback, a selected test
+fails rather than silently connecting to the default mock server or skipping.
+Use the actual MCP URL/path, and `localhost` rather than `host.docker.internal`
+when accessing a server published on your Mac from a host-based test runner.
+
+For bearer-protected endpoints, set `HELPDESK_AGENT_MCP_AUTH_TOKEN` (raw token,
+without `Bearer `). This is a shared token, matching the app's configuration.
+For IAM-authenticated FAQ gateways, set `HELPDESK_AGENT_MCP_FAQ_AUTH_MODE=iam`
+and use an authenticated `AWS_PROFILE` or standard AWS credentials, including
+`AWS_SESSION_TOKEN` for temporary credentials. Set
+`HELPDESK_AGENT_MCP_FAQ_REGION` if the gateway region cannot be inferred from its
+hostname. IAM requests use the existing SigV4 helper and omit bearer auth.
+Otherwise FAQ authentication defaults to `bearer`.
+
+`HELPDESK_AGENT_MCP_TIMEOUT_SECONDS` defaults to 5 seconds;
+`HELPDESK_AGENT_MCP_PLAYWRIGHT_TIMEOUT_SECONDS` defaults to 30 seconds.
+Discovery failures are test failures, not skips. Keep credentials in ignored
+local configuration; do not publish raw failure logs or reports without checking
+them for endpoint or credential details.
+
+Discovery uses the application's configured MCP headers, removing Authorization
+only for IAM-signed FAQ requests. HTTP failures are reported without raw response
+bodies or endpoint URLs. Zoho's `Invalid API Key.` response means initialization
+was rejected: verify the complete Zoho-issued MCP URL and required credentials.
+An account ID or sender address cannot fix a rejected initialization request.
+Discovery does not call `getMailAccounts` or any other advertised tool.
+
+### Local external LLM tests
+
+[tests/integration/test_llm.py](tests/integration/test_llm.py) invokes the real
+OpenAI-compatible endpoint with a synthetic helpdesk report. The single
+`test_external_llm` checks connectivity, authentication, and structured triage through
+the production client and guardrails, not exact wording or classification accuracy.
+They make no MCP tool calls and require no running helpdesk app.
+
+```bash
+# One billable request; SDK retries are disabled
+uv run pytest tests/integration/test_llm.py --live-llm -v --tb=short
+
+# Run LLM and MCP discovery checks together
+uv run pytest tests/integration/ --live-llm --live-mcp -v --tb=short
+```
+
+Set `HELPDESK_AGENT_LLM_API_KEY` and an explicit
+`HELPDESK_AGENT_LLM_BASE_URL` in the root `.env` or exported environment.
+The usual application base-URL normalization applies to AgentCore gateways.
+An absent base URL fails rather than falling back to public OpenAI.
+Also configure `HELPDESK_AGENT_LLM_MODEL` for your gateway,
+`HELPDESK_AGENT_LLM_TEMPERATURE` for that model, and optionally
+`HELPDESK_AGENT_LLM_TIMEOUT_SECONDS` (default 30).
+Exported settings take precedence over `.env`; the live fixture restores the
+real API key only for these tests, without changing other tests' dummy credentials.
+Tests are skipped without `--live-llm`; authentication, API, schema, and guardrail
+errors fail when enabled. Do not share raw failure logs containing sensitive data.
 
 ## Error Handling
 

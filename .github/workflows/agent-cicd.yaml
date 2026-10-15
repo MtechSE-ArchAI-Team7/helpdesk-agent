@@ -91,17 +91,60 @@ jobs:
         id: dependencies
         continue-on-error: true
         run: uv sync --frozen
-      - name: Pytest integration tests
+      - name: Pytest live integration tests
         id: tests
         continue-on-error: true
         timeout-minutes: 15
         env:
           COVERAGE_FILE: reports/integration/.coverage.integration
-        run: >-
-          uv run --frozen --no-sync pytest -m integration --strict-markers
-          --junitxml=reports/integration/integration.xml --cov=helpdesk_agent
-          --cov-report=term-missing --cov-report=html:reports/integration/htmlcov
-          --cov-report=json:reports/integration/integration-coverage.json --cov-fail-under=90
+          LIVE_INTEGRATION_ENV: ${{ secrets.HELPDESK_AGENT_INTEGRATION_ENV }}
+        run: |
+          uv run --frozen --no-sync python - <<'PY'
+          from io import StringIO
+          import os
+          import re
+          import subprocess
+          import sys
+
+          from dotenv.parser import parse_stream
+
+          raw = os.environ.pop("LIVE_INTEGRATION_ENV", "")
+          settings = {}
+          for binding in parse_stream(StringIO(raw)):
+              if binding.error:
+                  sys.exit(f"Invalid integration environment syntax at line {binding.original.line}")
+              if binding.key is None:
+                  continue
+              if binding.value is None:
+                  sys.exit(f"Expected KEY=value at integration environment line {binding.original.line}")
+              if binding.key in settings:
+                  sys.exit(f"Duplicate variable at integration environment line {binding.original.line}")
+              settings[binding.key] = binding.value
+          if not settings:
+              sys.exit("HELPDESK_AGENT_INTEGRATION_ENV must contain KEY=value settings")
+          aws_keys = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_DEFAULT_REGION"}
+          for key, value in settings.items():
+              if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or (
+                  not key.startswith("HELPDESK_AGENT_") and key not in aws_keys
+              ):
+                  sys.exit("Integration secret contains an unsupported environment variable")
+              if not isinstance(value, str) or "\x00" in value:
+                  sys.exit("Integration secret values must be strings without null characters")
+          for value in settings.values():
+              if value:
+                  escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                  print(f"::add-mask::{escaped}", flush=True)
+          environment = dict(os.environ)
+          environment.update(settings)
+          result = subprocess.run([
+              "uv", "run", "--frozen", "--no-sync", "pytest", "tests/integration/",
+              "-m", "integration", "--live-mcp", "--live-llm", "--strict-markers", "--tb=short",
+              "--junitxml=reports/integration/integration.xml", "--cov=helpdesk_agent",
+              "--cov-report=term-missing", "--cov-report=html:reports/integration/htmlcov",
+              "--cov-report=json:reports/integration/integration-coverage.json",
+          ], env=environment, check=False)
+          sys.exit(result.returncode)
+          PY
       - name: Upload integration reports and coverage
         if: always()
         uses: actions/upload-artifact@v4

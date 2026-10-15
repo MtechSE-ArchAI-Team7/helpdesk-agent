@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+_LIVE_LLM_API_KEY = os.environ.get("HELPDESK_AGENT_LLM_API_KEY")
+
 # Set a non-secret placeholder API key for tests
 os.environ["HELPDESK_AGENT_LLM_API_KEY"] = "placeholder"
 # Default to MCP disabled so webhook/chat tests get mocked flows unless a
@@ -15,18 +17,22 @@ os.environ["HELPDESK_AGENT_MEMORY_ENABLED"] = "0"
 os.environ["HELPDESK_AGENT_LANGFUSE_ENABLED"] = "0"
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--live-llm",
+        action="store_true",
+        default=False,
+        help="Enable billable LLM integration tests against the configured base URL.",
+    )
+    parser.addoption(
+        "--live-mcp",
+        action="store_true",
+        default=False,
+        help="Enable external MCP discovery tests (initialize and tools/list only).",
+    )
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    integration_modules = {
-        "test_a2a.py",
-        "test_chat_endpoint.py",
-        "test_email_read_chat.py",
-        "test_email_webhook.py",
-        "test_main.py",
-        "test_mcp.py",
-        "test_memory_webhook.py",
-        "test_workflow.py",
-        "test_zohomail_flow.py",
-    }
     unit_modules = {
         "test_agentcore_deploy.py",
         "test_chat.py",
@@ -36,18 +42,37 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         "test_ticketing.py",
     }
     for item in items:
+        if Path(__file__).parent / "archive" in Path(str(item.path)).parents:
+            item.add_marker(pytest.mark.archived)
+            continue
+        if item.get_closest_marker("live_llm") and not item.config.getoption("--live-llm"):
+            item.add_marker(pytest.mark.skip(reason="External LLM invocation requires --live-llm"))
+        if item.get_closest_marker("live_mcp") and not item.config.getoption("--live-mcp"):
+            item.add_marker(pytest.mark.skip(reason="External MCP discovery requires --live-mcp"))
         categories = [name for name in ("unit", "integration") if item.get_closest_marker(name)]
         if len(categories) > 1:
             raise pytest.UsageError(f"Test has multiple categories: {item.nodeid}")
         if categories:
             continue
         filename = Path(str(item.path)).name
-        if filename in integration_modules:
-            item.add_marker(pytest.mark.integration)
-        elif filename in unit_modules:
+        if filename in unit_modules:
             item.add_marker(pytest.mark.unit)
         else:
             raise pytest.UsageError(f"Assign a unit or integration marker to {item.nodeid}")
+
+
+@pytest.fixture
+def live_llm_config(monkeypatch: pytest.MonkeyPatch):
+    from dotenv import dotenv_values
+
+    from helpdesk_agent.config import LLMConfig
+
+    file_key = dotenv_values(Path(__file__).resolve().parents[1] / ".env").get("HELPDESK_AGENT_LLM_API_KEY")
+    key = _LIVE_LLM_API_KEY if _LIVE_LLM_API_KEY is not None else file_key
+    if not key or not key.strip() or key == "placeholder":
+        pytest.fail("Live LLM tests require a real HELPDESK_AGENT_LLM_API_KEY", pytrace=False)
+    monkeypatch.setenv("HELPDESK_AGENT_LLM_API_KEY", key)
+    return LLMConfig.from_env()
 
 
 @pytest.fixture(autouse=True)

@@ -31,7 +31,7 @@ from helpdesk_agent.modules.memory import FACTS_NAMESPACE, SUMMARY_NAMESPACE, Ag
 from helpdesk_agent.modules.triage.guardrails import GuardrailsValidator
 from helpdesk_agent.modules.triage.llm import LLMError, LLMTriageClient
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.archived
 URL = "https://portal.example.com/login"
 
 
@@ -582,14 +582,22 @@ def test_api_routes_use_real_workflow_services_and_memory(stack, monkeypatch, mo
 
 
 @pytest.mark.parametrize("failure", [None, "memory", "configuration", "llm_key"])
-def test_environment_dependency_factories_and_aws_startup_reach_api(stack, monkeypatch, failure):
+@pytest.mark.parametrize("ambient_prefix", ["", "external___"])
+def test_environment_dependency_factories_and_aws_startup_reach_api(stack, monkeypatch, failure, ambient_prefix):
     services, _, _ = stack
+    monkeypatch.setenv("HELPDESK_AGENT_MCP_TOOL_PREFIX", ambient_prefix)
+    monkeypatch.setenv("HELPDESK_AGENT_MCP_ZOHOMAIL_TOOL_PREFIX", ambient_prefix)
+    monkeypatch.setenv("HELPDESK_AGENT_MCP_FAQ_AUTH_MODE", "iam")
     variables = {
         "HELPDESK_AGENT_USE_MCP": "1",
         "HELPDESK_AGENT_MCP_ATLASSIAN_URL": "https://jira.example.com/mcp",
+        "HELPDESK_AGENT_MCP_TOOL_PREFIX": "",
         "HELPDESK_AGENT_MCP_ZOHOMAIL_URL": "https://mail.example.com/mcp",
+        "HELPDESK_AGENT_MCP_ZOHOMAIL_TOOL_PREFIX": "ZohoMail_",
+        "HELPDESK_AGENT_ZOHOMAIL_FROM_ADDRESS": "support@example.com",
         "HELPDESK_AGENT_MCP_FAQ_URL": "https://faq.example.com/mcp",
         "HELPDESK_AGENT_MCP_FAQ_TOOL_PREFIX": "kb_",
+        "HELPDESK_AGENT_MCP_FAQ_AUTH_MODE": "bearer",
         "HELPDESK_AGENT_MCP_PLAYWRIGHT_URL": "https://browser.example.com/mcp",
         "HELPDESK_AGENT_MCP_PLAYWRIGHT_TOOL_PREFIX": "",
         "HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS": "portal.example.com",

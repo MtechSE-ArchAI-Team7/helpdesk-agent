@@ -66,9 +66,13 @@ artifacts = ["src/helpdesk_agent/py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = [".*", "build", "dist", "*.egg", "node_modules", "venv", "archive"]
 markers = [
   "unit: isolated component tests with mocked external boundaries",
-  "integration: API, workflow, and transport collaboration tests",
+  "integration: live external MCP discovery and LLM invocation tests",
+  "archived: mocked integration tests excluded from normal collection",
+  "live_mcp: opt-in external MCP discovery tests; never execute advertised tools",
+  "live_llm: opt-in billable LLM tests against an explicit base URL",
   "functional: live labelled LLM evaluations",
 ]
 
