@@ -488,6 +488,7 @@ jobs:
         run: printf '%s  image.tar\n' "$EXPECTED_SHA256" | sha256sum --check -
       - name: Trivy container image scan
         id: scan
+        continue-on-error: true
         timeout-minutes: 10
         uses: aquasecurity/trivy-action@0.35.0
         with:

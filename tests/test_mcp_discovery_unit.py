@@ -1,3 +1,4 @@
+import secrets
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -81,7 +82,7 @@ async def test_discovery_initializes_and_lists_all_pages_without_tool_calls(monk
 
     monkeypatch.setattr(discovery, "streamablehttp_client", transport)
     monkeypatch.setattr(discovery, "ClientSession", client)
-    value = "test-token"
+    value = secrets.token_urlsafe(24)
     config = MCPConfig(
         faq_url="https://custom.example/mcp",
         auth_token=value,
