@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def draft_resolution(
+def render_fallback_resolution(
     faq_article: dict[str, Any],
     raw_text: str,
 ) -> str:

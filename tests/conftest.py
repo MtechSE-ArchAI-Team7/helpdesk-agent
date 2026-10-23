@@ -96,24 +96,38 @@ def _reset_dependency_caches():
 @pytest.fixture
 def mock_llm_client():
     """Create a mock LLM client for testing."""
+    from helpdesk_agent.domain.models.browser import BrowserPlan, BrowserReactAction
     from helpdesk_agent.domain.models.triage import TriageResult
     from helpdesk_agent.infrastructure.llm.client import LLMTriageClient
 
     client = MagicMock(spec=LLMTriageClient)
-    client.triage_email = AsyncMock(
-        return_value=TriageResult(
-            service="identity",
-            issue_type="access",
-            priority="high",
-            confidence=0.9,
-            missing_info=[],
-            clarifying_questions=[],
-            summary="Password reset request",
-            source="email",
-            sender="test@example.com",
-            raw_text="Subject: Password reset\n\nBody: I need to reset my password",
+    result = TriageResult(
+        service="identity",
+        issue_type="access",
+        priority="high",
+        confidence=0.9,
+        missing_info=[],
+        clarifying_questions=[],
+        summary="Password reset request",
+        source="email",
+        sender="test@example.com",
+        raw_text="Subject: Password reset\n\nBody: I need to reset my password",
+    )
+    client.triage_email = AsyncMock(return_value=result)
+    client.reflect_triage = AsyncMock(side_effect=lambda current, _subject, _body: current)
+    client.plan_browser = AsyncMock(
+        return_value=BrowserPlan(
+            objective="Inspect the reported page",
+            inspection_order=["browser_snapshot"],
         )
     )
+    client.react_browser = AsyncMock(
+        return_value=BrowserReactAction(action="finish", decision_summary="The observations are sufficient")
+    )
+    client.draft_clarification = AsyncMock(return_value="We need a little more information.")
+    client.draft_resolution = AsyncMock(return_value="Please try the supplied solution.")
+    client.fallback_clarification = MagicMock(return_value="We need a little more information.")
+    client.fallback_resolution = MagicMock(return_value="Please try the supplied solution.")
     return client
 
 

@@ -257,11 +257,11 @@ src/helpdesk_agent/
 | `domain/` | Provider-independent support models, deterministic policies, and exceptions |
 | `application/` | Shared support use cases, communication, memory coordination, and diagnosis delegation |
 | `workflows/` | LangGraph state, node sequencing, routing, and browser-validation subgraph |
-| `reasoning/` | Triage, browser feasibility, and conservative evidence interpretation |
-| `prompts/` | Version-controlled instructions and deterministic email templates |
+| `reasoning/` | Triage, Reflection, browser Planning/ReAct, evidence assessment, and outbound email drafting |
+| `prompts/` | Version-controlled LLM instructions and deterministic email fallbacks |
 | `ports/` | Protocols for required external capabilities and workflow execution |
 | `infrastructure/` | Concrete LLM, MCP, A2A, knowledge, memory, and persistence adapters |
-| `config/` | Existing model assignment, runtime settings, thresholds, and execution limits |
+| `config/` | Task-specific model assignments, runtime settings, thresholds, and execution limits |
 | `observability/` | Traces, structured workflow events, and correlation identifiers |
 | `tests/` | Offline unit/architecture contracts and explicitly opted-in live integration tests |
 | `evaluations/` | DeepEval entrypoint, datasets, metrics, and execution support |
@@ -282,19 +282,23 @@ modules re-export or delegate to one canonical implementation; private
 monkeypatch targets should use canonical modules. Configuration and observability
 are now packages, with their public exports retained.
 
-Browser feasibility assessment still runs **before** clarification routing so it
-can request missing details. Only the eligible validation route invokes the
-[compiled browser subgraph](src/helpdesk_agent/workflows/browser/graph.py):
-target revalidation, bounded execution, evidence interpretation, and result
-recording. Browser tools still execute in one MCP session; validation then
-continues to FAQ routing. Parent state, gate decisions, and outer workflow
-events are retained without duplicate evidence or internal subgraph fields.
+Reflection reviews the initial triage result; the workflow's deterministic
+clarification and routing gates remain authoritative. A reflection failure is
+recorded and leaves the initial triage unchanged. Browser feasibility
+assessment still runs **before** clarification routing so it can request
+missing details. Eligible checks use the
+[compiled browser subgraph](src/helpdesk_agent/workflows/browser/graph.py) to
+revalidate the target, create a read-only inspection plan, and run at most three
+ReAct inspection rounds in one MCP session before interpreting and recording
+evidence. Planning failures skip browser tools; ReAct or evidence failures are
+recorded as inconclusive. Browser work then continues to FAQ routing.
 
-The refactor adds no Reflection, Planning, or ReAct capabilities, model calls,
-database, or knowledge backend. Clarification and resolution emails remain
-deterministic templates. Complete prompt and template fingerprints are checked
-against the pre-refactor behavior in
-[contract tests](tests/test_refactor_contracts.py).
+Clarification and resolution emails are generated with the email model only
+when an outbound email can be sent (an inbound message ID is available).
+Generation failures use deterministic templates; chat responses and ticket
+comments remain unchanged. These additional reasoning calls can increase
+latency and model usage, especially for browser-eligible cases. Task-specific
+models and their defaults are documented below and in `.env.example`.
 
 Live evaluations intentionally remain outside `tests/` to avoid its dummy
 credential fixtures. Their existing entrypoint is
@@ -315,9 +319,11 @@ ticket fields.
 After triage, the workflow assesses whether a read-only browser check can
 validate the reported error. It only invokes the hosted Playwright MCP runtime
 when the report includes an explicit HTTP or HTTPS URL whose exact host is in
-`HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS`. The browser check navigates to the
-page and collects a page snapshot, browser console errors, and network request
-metadata in one MCP session. It does not log in, submit forms, or modify data.
+`HELPDESK_AGENT_PLAYWRIGHT_ALLOWED_HOSTS`. The browser planner selects from page snapshots, browser console errors, and
+network request metadata; ReAct can inspect only those read-only tools, for at
+most three rounds in the same MCP session. Navigation remains a single
+deterministic action to the validated URL. The workflow does not log in, submit
+forms, or modify data.
 If the report lacks details needed for a safe check, those questions join the
 normal clarification email. Otherwise, ineligible or unavailable checks
 continue to FAQ search without blocking the case.
@@ -479,7 +485,16 @@ allowlist checks independently.
 
 ### Optional
 
-- `HELPDESK_AGENT_LLM_MODEL` - LLM model (default: `gpt-4o-mini`)
+- `HELPDESK_AGENT_LLM_MODEL` - Shared legacy model fallback; if set, it applies
+  to tasks without an explicit task model. Otherwise, task defaults are used.
+- `HELPDESK_AGENT_LLM_TRIAGE_MODEL` - Triage model (default: `openai/gpt-5.6-terra`)
+- `HELPDESK_AGENT_LLM_PLANNING_MODEL` - Browser feasibility/planning model
+  (default: `openai/gpt-5.6-terra`)
+- `HELPDESK_AGENT_LLM_REACT_MODEL` - Browser ReAct model (default: `openai/gpt-5.6-terra`)
+- `HELPDESK_AGENT_LLM_REFLECTION_MODEL` - Triage Reflection model
+  (default: `openai/gpt-5.6-sol`)
+- `HELPDESK_AGENT_LLM_EVIDENCE_MODEL` - Browser evidence model (default: `openai/gpt-5.6-sol`)
+- `HELPDESK_AGENT_LLM_EMAIL_MODEL` - Outbound email model (default: `openai/gpt-5.6-luna`)
 - `HELPDESK_AGENT_LLM_BASE_URL` - Custom LLM endpoint
 - `HELPDESK_AGENT_LLM_TEMPERATURE` - Sampling temperature from `0` to `2` (default: `0.1`; some models only support `1`)
 - `HELPDESK_AGENT_LLM_TIMEOUT_SECONDS` - LLM request timeout (default: `30.0`)

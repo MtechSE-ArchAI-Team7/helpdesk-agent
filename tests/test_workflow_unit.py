@@ -4,7 +4,13 @@ import pytest
 
 from helpdesk_agent.api.factory import HelpdeskWorkflow
 from helpdesk_agent.config.settings import MCPConfig, TriageConfig
-from helpdesk_agent.domain.models.browser import BrowserSettings, PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.browser import (
+    BrowserPlan,
+    BrowserReactAction,
+    BrowserSettings,
+    PlaywrightAssessment,
+    PlaywrightEvaluation,
+)
 from helpdesk_agent.domain.models.triage import TriageResult
 from helpdesk_agent.domain.models.workflow import WorkflowState
 from helpdesk_agent.infrastructure.a2a.client import DeliveryOutcome
@@ -57,8 +63,19 @@ def graph_state(**overrides):
 def workflow():
     llm = MagicMock()
     llm.triage_email = AsyncMock(return_value=triage())
+    llm.reflect_triage = AsyncMock(side_effect=lambda result, _subject, _body: result)
+    llm.plan_browser = AsyncMock(
+        return_value=BrowserPlan(
+            objective="Inspect the page", inspection_order=["browser_snapshot", "browser_console_messages"]
+        )
+    )
+    llm.react_browser = AsyncMock(
+        return_value=BrowserReactAction(action="finish", decision_summary="The observations are sufficient")
+    )
     llm.draft_clarification = AsyncMock(return_value="Which browser?")
     llm.draft_resolution = AsyncMock(return_value="Reset your password.")
+    llm.fallback_clarification = MagicMock(return_value="Which browser?")
+    llm.fallback_resolution = MagicMock(return_value="Reset your password.")
     flow = HelpdeskWorkflow(llm_client=llm, triage_config=TriageConfig())
     flow.project_key = "HELP"
     flow.ticket_flow = MagicMock()
@@ -81,6 +98,7 @@ def browser_enabled(flow):
     flow.playwright_flow.config = MCPConfig(
         playwright_url="https://browser.example.com/mcp", playwright_allowed_hosts=["portal.example.com"]
     )
+    flow.playwright_flow.mcp_adapter = flow.mcp_adapter
 
 
 @pytest.mark.asyncio
@@ -174,11 +192,15 @@ async def test_faq_resolution_and_diagnosis_graph_with_mocked_flows(workflow, fa
     final = await workflow.run(initial)
     assert final.current_step == ("faq_answer_provided" if faq_score >= 0.7 else "diagnosis_required")
     if faq_score >= 0.7:
-        workflow.llm_client.draft_resolution.assert_awaited_once()
+        if email:
+            workflow.llm_client.draft_resolution.assert_awaited_once()
+        else:
+            workflow.llm_client.draft_resolution.assert_not_awaited()
         assert "FAQ answer provided" in workflow.ticket_flow.add_comment.await_args.args[1]
     else:
         workflow.llm_client.draft_resolution.assert_not_awaited()
         assert "Diagnosis required" in workflow.ticket_flow.add_comment.await_args.args[1]
+    assert workflow.llm_client.draft_resolution.await_count == int(email and faq_score >= 0.7)
     assert workflow.mail_flow.reply_email.await_count == (2 if email and faq_score >= 0.7 else int(email))
 
 
@@ -254,26 +276,133 @@ async def test_browser_validation_evidence_failures_and_ticket_comment(workflow,
             expected_error="Login fails",
             target_url="https://untrusted.example/login" if case == "untrusted" else "https://portal.example.com/login",
         )
-    workflow.playwright_flow.validate = AsyncMock(
+    from contextlib import asynccontextmanager
+
+    session = MagicMock()
+    session.navigate = AsyncMock(return_value={"tool": "browser_navigate", "status": "completed", "content": {}})
+    session.inspect = AsyncMock(
         return_value={
+            "tool": "browser_snapshot",
             "status": "failed" if case == "tool_failed" else "completed",
-            "evidence": "Login error",
-            "tool_statuses": [{"tool": "browser_snapshot", "status": "completed"}],
+            "content": {"text": "Login error"},
         }
     )
+
+    @asynccontextmanager
+    async def open_session(_target_url):
+        yield session
+
+    workflow.playwright_flow.open_session = MagicMock(side_effect=open_session)
+    workflow.llm_client.plan_browser.return_value = BrowserPlan(
+        objective="Inspect the login page", inspection_order=["browser_snapshot"]
+    )
+    if case == "tool_failed":
+        workflow.llm_client.react_browser.return_value = BrowserReactAction(
+            action="inspect", tool="browser_snapshot", decision_summary="Inspect page content"
+        )
     workflow.llm_client.evaluate_playwright_validation = AsyncMock(
         side_effect=LLMError("Unavailable") if case == "evaluation_failed" else None,
         return_value=PlaywrightEvaluation(status="reproduced", summary="Login error displayed"),
     )
     await workflow._playwright_validate_node(state)
     if case in {"missing", "untrusted"}:
-        workflow.playwright_flow.validate.assert_not_awaited()
+        workflow.playwright_flow.open_session.assert_not_called()
         assert state["workflow_state"].history[-1]["status"] == "skipped"
     else:
+        workflow.playwright_flow.open_session.assert_called_once_with("https://portal.example.com/login")
         expected = "reproduced" if case == "completed" else "inconclusive"
         assert state["playwright_validation"]["status"] == expected
         assert state["workflow_state"].evidence[0]["status"] == expected
-        assert expected in workflow.ticket_flow.add_comment.await_args.args[1]
+        if case == "tool_failed":
+            workflow.ticket_flow.add_comment.assert_not_awaited()
+        else:
+            assert expected in workflow.ticket_flow.add_comment.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_triage_reflection_failure_retains_initial_result(workflow):
+    state = graph_state()
+    workflow.llm_client.reflect_triage.side_effect = LLMError("Reflection unavailable")
+    await workflow._triage_node(state)
+    assert state["triage_result"].summary == "Login issue"
+    assert state["workflow_state"].triage["summary"] == "Login issue"
+    assert any(
+        entry["step"] == "triage_reflection" and entry["status"] == "failed"
+        for entry in state["workflow_state"].history
+    )
+
+
+@pytest.mark.asyncio
+async def test_email_generation_failure_uses_deterministic_fallback(workflow):
+    state = graph_state()
+    workflow.llm_client.draft_clarification.side_effect = LLMError("Email model unavailable")
+    workflow.llm_client.fallback_clarification.return_value = "Fallback clarification"
+    await workflow._clarify_node(state)
+    assert workflow.mail_flow.reply_email.await_args.args[1] == "Fallback clarification"
+    workflow.llm_client.fallback_clarification.assert_called_once()
+    assert any(
+        entry["step"] == "email_generation" and entry["status"] == "failed" for entry in state["workflow_state"].history
+    )
+
+
+@pytest.mark.asyncio
+async def test_browser_planning_failure_skips_tool_session(workflow):
+    browser_enabled(workflow)
+    state = graph_state(
+        playwright_assessment=PlaywrightAssessment(
+            decision="eligible",
+            reason="Check the reported error",
+            expected_error="Login fails",
+            target_url="https://portal.example.com/login",
+        )
+    )
+    workflow.llm_client.plan_browser.side_effect = LLMError("Planning unavailable")
+    workflow.playwright_flow.open_session = MagicMock()
+    await workflow._playwright_validate_node(state)
+    assert state["playwright_validation"]["status"] == "inconclusive"
+    workflow.playwright_flow.open_session.assert_not_called()
+    workflow.ticket_flow.add_comment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_browser_react_stops_after_three_inspection_rounds(workflow):
+    from contextlib import asynccontextmanager
+
+    browser_enabled(workflow)
+    state = graph_state(
+        playwright_assessment=PlaywrightAssessment(
+            decision="eligible",
+            reason="Check the reported error",
+            expected_error="Login fails",
+            target_url="https://portal.example.com/login",
+        )
+    )
+    workflow.llm_client.plan_browser.return_value = BrowserPlan(
+        objective="Inspect relevant page evidence",
+        inspection_order=["browser_snapshot", "browser_console_messages", "browser_network_requests"],
+    )
+    workflow.llm_client.react_browser.side_effect = [
+        BrowserReactAction(action="inspect", tool=tool, decision_summary="Collect the next observation")
+        for tool in ["browser_snapshot", "browser_console_messages", "browser_network_requests"]
+    ]
+    session = MagicMock()
+    session.navigate = AsyncMock(return_value={"tool": "browser_navigate", "status": "completed", "content": {}})
+    session.inspect = AsyncMock(
+        side_effect=lambda tool: {"tool": tool, "status": "completed", "content": {"text": "observed"}}
+    )
+
+    @asynccontextmanager
+    async def open_session(_target_url):
+        yield session
+
+    workflow.playwright_flow.open_session = MagicMock(side_effect=open_session)
+    workflow.llm_client.evaluate_playwright_validation = AsyncMock(
+        return_value=PlaywrightEvaluation(status="reproduced", summary="Error found")
+    )
+    await workflow._playwright_validate_node(state)
+    assert workflow.llm_client.react_browser.await_count == 3
+    assert session.inspect.await_count == 3
+    assert state["playwright_validation"]["status"] == "reproduced"
 
 
 @pytest.mark.asyncio

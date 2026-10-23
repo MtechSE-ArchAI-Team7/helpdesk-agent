@@ -6,17 +6,32 @@ from typing import Any
 from pydantic import BaseModel
 
 from helpdesk_agent.domain.exceptions import LLMError
-from helpdesk_agent.domain.models.browser import PlaywrightAssessment, PlaywrightEvaluation
-from helpdesk_agent.domain.models.triage import TriageLLMResponse, TriageResult
+from helpdesk_agent.domain.models.browser import (
+    BrowserPlan,
+    BrowserReactAction,
+    PlaywrightAssessment,
+    PlaywrightEvaluation,
+)
+from helpdesk_agent.domain.models.triage import EmailDraft, TriageLLMResponse, TriageResult
 from helpdesk_agent.ports.capabilities import ChatMessage, LLMPort
 from helpdesk_agent.prompts.browser.assessment import SYSTEM as ASSESSMENT_SYSTEM
 from helpdesk_agent.prompts.browser.assessment import render as render_assess_playwright_validation
 from helpdesk_agent.prompts.browser.evidence import SYSTEM as EVIDENCE_SYSTEM
 from helpdesk_agent.prompts.browser.evidence import render as render_evaluate_playwright_validation
-from helpdesk_agent.prompts.communication.draft_clarification import draft_clarification as render_clarification
-from helpdesk_agent.prompts.communication.draft_resolution import draft_resolution as render_resolution
+from helpdesk_agent.prompts.browser.planning import SYSTEM as PLANNING_SYSTEM
+from helpdesk_agent.prompts.browser.planning import render as render_browser_plan
+from helpdesk_agent.prompts.browser.react import SYSTEM as REACT_SYSTEM
+from helpdesk_agent.prompts.browser.react import render as render_browser_react
+from helpdesk_agent.prompts.communication.draft_clarification import (
+    render_fallback_clarification,
+)
+from helpdesk_agent.prompts.communication.draft_resolution import render_fallback_resolution
+from helpdesk_agent.prompts.communication.email import SYSTEM as EMAIL_SYSTEM
+from helpdesk_agent.prompts.communication.email import render_clarification, render_resolution
 from helpdesk_agent.prompts.triage.email import SYSTEM as TRIAGE_SYSTEM
 from helpdesk_agent.prompts.triage.email import render as render_triage_email
+from helpdesk_agent.prompts.triage.reflection import SYSTEM as REFLECTION_SYSTEM
+from helpdesk_agent.prompts.triage.reflection import render as render_triage_reflection
 from helpdesk_agent.reasoning.guardrails import GuardrailsValidator
 
 
@@ -31,8 +46,10 @@ class HelpdeskReasoner:
         messages: list[ChatMessage],
         empty_message: str,
         output_model: type[BaseModel],
+        *,
+        task: str,
     ) -> dict[str, Any]:
-        async with self.transport.generate(name, messages) as content:
+        async with self.transport.generate(name, messages, task=task) as content:
             if not content:
                 raise LLMError(empty_message)
             data = json.loads(content)
@@ -82,6 +99,7 @@ class HelpdeskReasoner:
                 ],
                 empty_message="LLM returned empty response",
                 output_model=TriageLLMResponse,
+                task="triage",
             )
 
             return TriageResult(
@@ -124,6 +142,7 @@ class HelpdeskReasoner:
                 ],
                 empty_message="LLM returned empty Playwright assessment",
                 output_model=PlaywrightAssessment,
+                task="planning",
             )
             return PlaywrightAssessment.model_validate(data)
         except json.JSONDecodeError as exc:
@@ -152,6 +171,7 @@ class HelpdeskReasoner:
                 ],
                 empty_message="LLM returned empty Playwright evaluation",
                 output_model=PlaywrightEvaluation,
+                task="evidence",
             )
             return PlaywrightEvaluation.model_validate(data)
         except json.JSONDecodeError as exc:
@@ -159,8 +179,93 @@ class HelpdeskReasoner:
         except Exception as exc:
             raise LLMError(f"Playwright evidence evaluation failed: {exc}") from exc
 
+    async def reflect_triage(self, result: TriageResult, subject: str, body: str) -> TriageResult:
+        prompt = render_triage_reflection(result, subject, body)
+        try:
+            await self.guardrails.validate_input({"subject": subject, "body": body, "triage": result.model_dump_json()})
+            data = await self._complete_json(
+                "llm.reflect_triage",
+                messages=[{"role": "system", "content": REFLECTION_SYSTEM}, {"role": "user", "content": prompt}],
+                empty_message="LLM returned empty triage reflection",
+                output_model=TriageLLMResponse,
+                task="reflection",
+            )
+            revised = TriageLLMResponse.model_validate(data)
+            return result.model_copy(update=revised.model_dump())
+        except Exception as exc:
+            raise LLMError(f"Triage reflection failed: {exc}") from exc
+
+    async def plan_browser(self, target_url: str, expected_error: str, summary: str) -> BrowserPlan:
+        prompt = render_browser_plan(target_url, expected_error, summary)
+        try:
+            await self.guardrails.validate_input(
+                {"target_url": target_url, "expected_error": expected_error, "summary": summary}
+            )
+            data = await self._complete_json(
+                "llm.plan_browser",
+                messages=[{"role": "system", "content": PLANNING_SYSTEM}, {"role": "user", "content": prompt}],
+                empty_message="LLM returned empty browser plan",
+                output_model=BrowserPlan,
+                task="planning",
+            )
+            return BrowserPlan.model_validate(data)
+        except Exception as exc:
+            raise LLMError(f"Browser planning failed: {exc}") from exc
+
+    async def react_browser(
+        self,
+        target_url: str,
+        expected_error: str,
+        summary: str,
+        inspection_order: list[str],
+        observations: list[dict[str, Any]],
+        round_number: int,
+    ) -> BrowserReactAction:
+        prompt = render_browser_react(target_url, expected_error, summary, inspection_order, observations, round_number)
+        try:
+            await self.guardrails.validate_input(
+                {
+                    "target_url": target_url,
+                    "expected_error": expected_error,
+                    "summary": summary,
+                    "observations": json.dumps(observations, ensure_ascii=True),
+                }
+            )
+            data = await self._complete_json(
+                "llm.react_browser",
+                messages=[{"role": "system", "content": REACT_SYSTEM}, {"role": "user", "content": prompt}],
+                empty_message="LLM returned empty browser ReAct action",
+                output_model=BrowserReactAction,
+                task="react",
+            )
+            return BrowserReactAction.model_validate(data)
+        except Exception as exc:
+            raise LLMError(f"Browser ReAct failed: {exc}") from exc
+
     async def draft_clarification(self, triage: TriageResult, raw_text: str) -> str:
-        return render_clarification(triage, raw_text)
+        return await self._draft_email("llm.draft_clarification", render_clarification(triage, raw_text))
 
     async def draft_resolution(self, faq_article: dict[str, Any], raw_text: str) -> str:
-        return render_resolution(faq_article, raw_text)
+        return await self._draft_email("llm.draft_resolution", render_resolution(faq_article, raw_text))
+
+    async def _draft_email(self, name: str, prompt: str) -> str:
+        try:
+            await self.guardrails.validate_input({"email_context": prompt})
+            data = await self._complete_json(
+                name,
+                messages=[{"role": "system", "content": EMAIL_SYSTEM}, {"role": "user", "content": prompt}],
+                empty_message="LLM returned empty email draft",
+                output_model=EmailDraft,
+                task="email",
+            )
+            return EmailDraft.model_validate(data).body
+        except Exception as exc:
+            raise LLMError(f"Email generation failed: {exc}") from exc
+
+    @staticmethod
+    def fallback_clarification(triage: TriageResult, raw_text: str) -> str:
+        return render_fallback_clarification(triage, raw_text)
+
+    @staticmethod
+    def fallback_resolution(faq_article: dict[str, Any], raw_text: str) -> str:
+        return render_fallback_resolution(faq_article, raw_text)

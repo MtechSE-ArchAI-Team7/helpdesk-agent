@@ -69,7 +69,7 @@ async def test_prompt_messages_match_pre_refactor_fingerprints(method, args, res
 
 
 @pytest.mark.asyncio
-async def test_deterministic_email_templates_match_baseline_without_model_calls() -> None:
+async def test_email_fallback_templates_match_baseline_without_model_calls() -> None:
     client = LLMTriageClient(LLMConfig(api_key="placeholder"))
     client._complete_json = AsyncMock()
     triage = TriageResult(
@@ -81,8 +81,8 @@ async def test_deterministic_email_templates_match_baseline_without_model_calls(
         clarifying_questions=["Which account?"],
     )
     try:
-        clarification = await client.draft_clarification(triage, "Test body")
-        resolution = await client.draft_resolution({"title": "Test article", "body": "Test instructions"}, "Test body")
+        clarification = client.fallback_clarification(triage, "Test body")
+        resolution = client.fallback_resolution({"title": "Test article", "body": "Test instructions"}, "Test body")
         assert hashlib.sha256(clarification.encode()).hexdigest() == (
             "86e6667eb431acf960513dc29319c2503cf1f59588f588fc13be6ec7d72b6724"
         )
@@ -105,6 +105,15 @@ async def test_compiled_browser_subgraph_is_used_on_eligible_parent_route() -> N
         summary="Login fails",
     )
     client.triage_email = AsyncMock(return_value=triage)
+    from helpdesk_agent.domain.models.browser import BrowserPlan, BrowserReactAction
+
+    client.reflect_triage = AsyncMock(side_effect=lambda result, _subject, _body: result)
+    client.plan_browser = AsyncMock(
+        return_value=BrowserPlan(objective="Inspect the login page", inspection_order=["browser_snapshot"])
+    )
+    client.react_browser = AsyncMock(
+        return_value=BrowserReactAction(action="finish", decision_summary="Evidence is sufficient")
+    )
     client.assess_playwright_validation = AsyncMock(
         return_value=PlaywrightAssessment(
             decision="eligible",
@@ -123,15 +132,18 @@ async def test_compiled_browser_subgraph_is_used_on_eligible_parent_route() -> N
     workflow.mcp_enabled = True
     workflow.browser_settings = BrowserSettings(True, ("portal.example.com",))
     workflow.playwright_flow.config = MCPConfig(playwright_allowed_hosts=["portal.example.com"])
-    workflow.playwright_flow.validate = AsyncMock(
-        return_value={
-            "status": "completed",
-            "evidence": "Login error displayed",
-            "tool_statuses": [],
-        }
-    )
+    from contextlib import asynccontextmanager
+
+    session = MagicMock()
+    session.navigate = AsyncMock(return_value={"tool": "browser_navigate", "status": "completed", "content": {}})
+
+    @asynccontextmanager
+    async def open_session(_target_url):
+        yield session
+
+    workflow.playwright_flow.open_session = MagicMock(side_effect=open_session)
     assert isinstance(workflow.browser_graph, CompiledStateGraph)
-    assert {"revalidate", "execute", "evaluate", "record"} <= workflow.browser_graph.get_graph().nodes.keys()
+    assert {"revalidate", "plan", "react", "evaluate", "record"} <= workflow.browser_graph.get_graph().nodes.keys()
     workflow.browser_graph.ainvoke = AsyncMock(wraps=workflow.browser_graph.ainvoke)
     state = await workflow.run(
         {
@@ -142,7 +154,7 @@ async def test_compiled_browser_subgraph_is_used_on_eligible_parent_route() -> N
         }
     )
     workflow.browser_graph.ainvoke.assert_awaited_once()
-    workflow.playwright_flow.validate.assert_awaited_once_with("https://portal.example.com/login")
+    workflow.playwright_flow.open_session.assert_called_once_with("https://portal.example.com/login")
     assert state.current_step == "diagnosis_required"
     assert len(state.evidence) == 1
     assert state.evidence[0]["status"] == "reproduced"

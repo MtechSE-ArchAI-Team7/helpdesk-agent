@@ -123,6 +123,8 @@ async def _playwright_validate_node(self: WorkflowContext, state: GraphState) ->
             "target_url": "",
             "expected_error": "",
             "started_at": 0.0,
+            "inspection_order": [],
+            "observations": [],
             "run_result": {},
             "result_status": "",
             "result_summary": "",

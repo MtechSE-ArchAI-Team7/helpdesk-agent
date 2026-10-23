@@ -4,11 +4,106 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from helpdesk_agent.config.settings import A2AConfig, LangfuseConfig, LLMConfig, MemoryConfig, TriageConfig
-from helpdesk_agent.domain.models.browser import PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.browser import (
+    PlaywrightAssessment,
+    PlaywrightEvaluation,
+)
 from helpdesk_agent.domain.models.triage import TriageResult
 from helpdesk_agent.infrastructure.llm.client import LLMError, LLMTriageClient
+from helpdesk_agent.infrastructure.llm.transport import OpenAITransport
 
 pytestmark = pytest.mark.unit
+
+
+def test_llm_task_model_defaults_and_precedence(monkeypatch):
+    tasks = {
+        "triage": "openai/gpt-5.6-terra",
+        "planning": "openai/gpt-5.6-terra",
+        "react": "openai/gpt-5.6-terra",
+        "reflection": "openai/gpt-5.6-sol",
+        "evidence": "openai/gpt-5.6-sol",
+        "email": "openai/gpt-5.6-luna",
+    }
+    task_env = {task: f"HELPDESK_AGENT_LLM_{task.upper()}_MODEL" for task in tasks}
+    monkeypatch.delenv("HELPDESK_AGENT_LLM_MODEL", raising=False)
+    for variable in task_env.values():
+        monkeypatch.delenv(variable, raising=False)
+    config = LLMConfig.from_env()
+    assert {task: config.model_for(task) for task in tasks} == tasks
+
+    monkeypatch.setenv("HELPDESK_AGENT_LLM_MODEL", "legacy/model")
+    config = LLMConfig.from_env()
+    assert {config.model_for(task) for task in tasks} == {"legacy/model"}
+    monkeypatch.setenv(task_env["email"], "special/email-model")
+    assert LLMConfig.from_env().model_for("email") == "special/email-model"
+
+
+@pytest.mark.asyncio
+async def test_transport_sends_task_specific_model_to_provider():
+    config = LLMConfig(
+        api_key="test",
+        model="shared/model",
+        task_models={"email": "special/email-model"},
+    )
+    with patch("helpdesk_agent.infrastructure.llm.transport.AsyncOpenAI") as constructor:
+        response = MagicMock()
+        response.choices[0].message.content = "{}"
+        constructor.return_value.chat.completions.create = AsyncMock(return_value=response)
+        transport = OpenAITransport(config)
+        async with transport.generate("llm.draft_email", [{"role": "user", "content": "Draft"}], task="email"):
+            pass
+        assert transport.client.chat.completions.create.await_args.kwargs["model"] == "special/email-model"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "task", "args", "payload"),
+    [
+        (
+            "reflect_triage",
+            "reflection",
+            (
+                TriageResult(service="identity", issue_type="access", priority="high", confidence=0.8, summary="Login"),
+                "Subject",
+                "Body",
+            ),
+            {
+                "service": "identity",
+                "issue_type": "access",
+                "priority": "high",
+                "confidence": 0.9,
+                "summary": "Reviewed login",
+            },
+        ),
+        (
+            "plan_browser",
+            "planning",
+            ("https://portal.example.com", "Login fails", "Login issue"),
+            {"objective": "Inspect the login page", "inspection_order": ["browser_snapshot"]},
+        ),
+        (
+            "react_browser",
+            "react",
+            ("https://portal.example.com", "Login fails", "Login issue", ["browser_snapshot"], [], 1),
+            {"action": "finish", "decision_summary": "Evidence is sufficient"},
+        ),
+        (
+            "draft_resolution",
+            "email",
+            ({"title": "Reset", "body": "Reset steps"}, "Login issue"),
+            {"body": "Please try the reset steps."},
+        ),
+    ],
+)
+async def test_reasoning_operation_uses_its_task_model(method, task, args, payload):
+    guardrails = MagicMock()
+    guardrails.validate_input = AsyncMock()
+    guardrails.validate_output = AsyncMock()
+    with patch("helpdesk_agent.infrastructure.llm.transport.AsyncOpenAI"):
+        client = LLMTriageClient(LLMConfig(api_key="test"), guardrails=guardrails)
+        client._complete_json = AsyncMock(return_value=payload)
+        await getattr(client, method)(*args)
+        assert client._complete_json.await_args.kwargs["task"] == task
 
 
 @pytest.mark.parametrize("raw", ["invalid", "[]", '{"agent": 123}'])
@@ -144,10 +239,20 @@ async def test_llm_request_uses_configured_temperature():
 @pytest.mark.asyncio
 async def test_llm_drafts_and_missing_key():
     guardrails = MagicMock()
+    guardrails.validate_input = AsyncMock()
+    guardrails.validate_output = AsyncMock()
     with pytest.raises(LLMError, match="API_KEY"):
         LLMTriageClient(LLMConfig(), guardrails=guardrails)
     with patch("helpdesk_agent.infrastructure.llm.transport.AsyncOpenAI"):
         client = LLMTriageClient(LLMConfig(api_key="test"), guardrails=guardrails)
+        client._complete_json = AsyncMock(
+            side_effect=[
+                {"body": "Please provide more details."},
+                {"body": "- Which browser?\n- What error?"},
+                {"body": "**Reset** instructions."},
+                {"body": "**Solution** is available."},
+            ]
+        )
         result = TriageResult(
             service="identity",
             issue_type="access",

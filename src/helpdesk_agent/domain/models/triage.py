@@ -17,6 +17,10 @@ class TriageLLMResponse(BaseModel):
     summary: str
 
 
+class EmailDraft(BaseModel):
+    body: str = Field(min_length=1, max_length=12000)
+
+
 class TriageResult(BaseModel):
     """Structured output from LLM triage."""
 

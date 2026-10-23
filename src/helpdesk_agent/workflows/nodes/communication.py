@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from helpdesk_agent.domain.exceptions import LLMError
 from helpdesk_agent.observability.workflow import _trace_step
 from helpdesk_agent.workflows.context import WorkflowContext
 from helpdesk_agent.workflows.state import GraphState
@@ -79,15 +80,25 @@ async def _clarify_node(self: WorkflowContext, state: GraphState) -> GraphState:
         logger.error("case=%s stage=clarify status=failed error=no_triage_result", case_id)
         return state
 
-    # Draft clarification email
-    clarification_body = await self.llm_client.draft_clarification(triage_result, triage_result.raw_text)
-
     subject, _ = self._split_subject_body(initial_input)
     reply_subject = self._ticketed_subject(ticket_id, subject)
 
     # Reply to the user with the clarifying questions
     message_id = initial_input.get("metadata", {}).get("message_id")
     if message_id:
+        try:
+            clarification_body = await self.llm_client.draft_clarification(triage_result, triage_result.raw_text)
+            workflow_state.record_history("email_generation", "completed", "Generated clarification email draft")
+        except LLMError as exc:
+            logger.warning(
+                "case=%s stage=email_generation status=failed type=clarification error_type=%s",
+                case_id,
+                type(exc).__name__,
+            )
+            workflow_state.record_history(
+                "email_generation", "failed", f"Using deterministic clarification template ({type(exc).__name__})"
+            )
+            clarification_body = self.llm_client.fallback_clarification(triage_result, triage_result.raw_text)
         email_result = await self.mail_flow.reply_email(
             message_id,
             clarification_body,
@@ -160,15 +171,25 @@ async def _resolve_faq_node(self: WorkflowContext, state: GraphState) -> GraphSt
 
     top_result = faq_results["results"][0]
 
-    # Draft resolution email
-    resolution_body = await self.llm_client.draft_resolution(top_result, workflow_state.summary)
-
     subject, _ = self._split_subject_body(initial_input)
     reply_subject = self._ticketed_subject(ticket_id, subject)
 
     # Reply to the user with the FAQ answer
     message_id = initial_input.get("metadata", {}).get("message_id")
     if message_id:
+        try:
+            resolution_body = await self.llm_client.draft_resolution(top_result, workflow_state.summary)
+            workflow_state.record_history("email_generation", "completed", "Generated resolution email draft")
+        except LLMError as exc:
+            logger.warning(
+                "case=%s stage=email_generation status=failed type=resolution error_type=%s",
+                case_id,
+                type(exc).__name__,
+            )
+            workflow_state.record_history(
+                "email_generation", "failed", f"Using deterministic resolution template ({type(exc).__name__})"
+            )
+            resolution_body = self.llm_client.fallback_resolution(top_result, workflow_state.summary)
         email_result = await self.mail_flow.reply_email(
             message_id,
             resolution_body,

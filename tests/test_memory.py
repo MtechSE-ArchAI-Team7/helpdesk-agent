@@ -284,6 +284,7 @@ def workflow(memory, *, confidence=0.9):
             raw_text="Login failure",
         )
     )
+    llm.reflect_triage = AsyncMock(side_effect=lambda result, _subject, _body: result)
     llm.draft_clarification = AsyncMock(return_value="Which browser?")
     result = HelpdeskWorkflow(llm_client=llm, memory=memory)
     result.ticket_flow.create_ticket = AsyncMock(return_value={"status": "created", "ticket_id": "HELP-1"})

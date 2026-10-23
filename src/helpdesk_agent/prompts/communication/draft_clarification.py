@@ -3,7 +3,7 @@ from __future__ import annotations
 from helpdesk_agent.domain.models.triage import TriageResult
 
 
-def draft_clarification(
+def render_fallback_clarification(
     triage: TriageResult,
     raw_text: str,
 ) -> str:

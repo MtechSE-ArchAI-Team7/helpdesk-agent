@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pydantic.root_model  # noqa: F401 - initialize the SDK's Pydantic v2 root model module
 import pytest
@@ -105,3 +106,34 @@ async def test_validate_marks_short_sequences_failed_and_caps_evidence() -> None
     assert result["status"] == "failed"
     assert len(result["evidence"]) == PlaywrightValidationFlow._MAX_EVIDENCE_CHARS
     assert result["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_scoped_browser_session_enforces_read_only_calls_and_closes() -> None:
+    remote_session = SimpleNamespace(
+        call_tool=AsyncMock(return_value=MCPResponse(None, "completed", {"text": "observed"}))
+    )
+    closed = []
+
+    @asynccontextmanager
+    async def session_context():
+        yield remote_session
+        closed.append(True)
+
+    adapter = SimpleNamespace(open_playwright_session=MagicMock(return_value=session_context()))
+    flow = PlaywrightValidationFlow(adapter, MCPConfig())
+    async with flow.open_session("https://portal.example.com/login") as browser:
+        await browser.navigate()
+        await browser.inspect("browser_snapshot")
+        with pytest.raises(ValueError, match="only once"):
+            await browser.navigate()
+        with pytest.raises(ValueError, match="not permitted"):
+            await browser.inspect("browser_click")
+
+    adapter.open_playwright_session.assert_called_once_with()
+    assert closed == [True]
+    assert remote_session.call_tool.await_args_list[0].args == (
+        "playwright.browser_navigate",
+        {"url": "https://portal.example.com/login"},
+    )
+    assert remote_session.call_tool.await_args_list[1].args == ("playwright.browser_snapshot", {})

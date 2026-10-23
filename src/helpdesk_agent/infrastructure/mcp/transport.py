@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -91,6 +92,26 @@ class MCPResponse:
     error: str | None = None
 
 
+class MCPPlaywrightSession:
+    """One initialized MCP session for a bounded read-only browser run."""
+
+    def __init__(self, adapter: MCPProxyAdapter, session: ClientSession) -> None:
+        self._adapter = adapter
+        self._session = session
+
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> MCPResponse:
+        if tool_name not in {
+            "playwright.browser_navigate",
+            "playwright.browser_snapshot",
+            "playwright.browser_console_messages",
+            "playwright.browser_network_requests",
+        }:
+            raise ValueError(f"Browser tool is not permitted: {tool_name}")
+        actual_name = self._adapter._translate_playwright_call(tool_name)
+        result = await self._session.call_tool(actual_name, arguments)
+        return self._adapter._response_from_result(result, actual_name)
+
+
 def _content_to_dict(content: list[Any]) -> dict[str, Any]:
     """Convert MCP content blocks into a plain dict.
 
@@ -167,6 +188,28 @@ class MCPProxyAdapter:
     def _translate_playwright_call(self, tool_name: str) -> str:
         """Strip the internal routing prefix before calling the hosted server."""
         return f"{self.config.playwright_tool_prefix}{tool_name.removeprefix(self._PLAYWRIGHT_PREFIX)}"
+
+    @asynccontextmanager
+    async def open_playwright_session(self) -> AsyncIterator[MCPPlaywrightSession]:
+        """Keep one server-side browser context alive across bounded ReAct rounds."""
+        url = self._resolve_url("playwright.browser_navigate")
+        async with streamablehttp_client(
+            url,
+            headers=self.config.headers or None,
+            timeout=self.config.playwright_timeout_seconds,
+        ) as (read_stream, write_stream, _):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                cursor: str | None = None
+                tool_names: list[str] = []
+                while True:
+                    catalog = await session.list_tools(cursor=cursor)
+                    tool_names.extend(tool.name for tool in catalog.tools)
+                    cursor = catalog.nextCursor
+                    if not cursor:
+                        break
+                logger.info("mcp tool_list status=completed count=%d tools=%s", len(tool_names), json.dumps(tool_names))
+                yield MCPPlaywrightSession(self, session)
 
     def _translate_atlassian_call(self, tool_name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Map legacy dotted tool names + args onto mcp-atlassian's schema."""

@@ -124,10 +124,17 @@ class LLMConfig:
     base_url: str | None = None
     timeout_seconds: float = 30.0
     temperature: float = 0.1
+    task_models: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.temperature) or not 0.0 <= self.temperature <= 2.0:
             raise ValueError("HELPDESK_AGENT_LLM_TEMPERATURE must be between 0 and 2")
+        invalid = [task for task, model in self.task_models.items() if not task.strip() or not model.strip()]
+        if invalid:
+            raise ValueError(f"LLM task model IDs must be nonempty: {', '.join(invalid)}")
+
+    def model_for(self, task: str) -> str:
+        return self.task_models.get(task, self.model)
 
     @staticmethod
     def _normalize_base_url(base_url: str | None) -> str | None:
@@ -150,12 +157,26 @@ class LLMConfig:
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
+        legacy_model = os.getenv("HELPDESK_AGENT_LLM_MODEL")
+        default_models = {
+            "triage": "openai/gpt-5.6-terra",
+            "planning": "openai/gpt-5.6-terra",
+            "react": "openai/gpt-5.6-terra",
+            "reflection": "openai/gpt-5.6-sol",
+            "evidence": "openai/gpt-5.6-sol",
+            "email": "openai/gpt-5.6-luna",
+        }
+        task_models = {
+            task: os.getenv(f"HELPDESK_AGENT_LLM_{task.upper()}_MODEL", legacy_model or default)
+            for task, default in default_models.items()
+        }
         return cls(
             api_key=os.getenv("HELPDESK_AGENT_LLM_API_KEY"),
-            model=os.getenv("HELPDESK_AGENT_LLM_MODEL", "gpt-4o-mini"),
+            model=legacy_model or "gpt-4o-mini",
             base_url=cls._normalize_base_url(os.getenv("HELPDESK_AGENT_LLM_BASE_URL")),
             timeout_seconds=float(os.getenv("HELPDESK_AGENT_LLM_TIMEOUT_SECONDS", "30.0")),
             temperature=float(os.getenv("HELPDESK_AGENT_LLM_TEMPERATURE", "0.1")),
+            task_models=task_models,
         )
 
 

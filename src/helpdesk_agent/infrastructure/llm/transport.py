@@ -27,16 +27,19 @@ class OpenAITransport:
         )
 
     @asynccontextmanager
-    async def generate(self, name: str, messages: list[ChatMessage]) -> AsyncIterator[str | None]:
+    async def generate(
+        self, name: str, messages: list[ChatMessage], *, task: str = "triage"
+    ) -> AsyncIterator[str | None]:
         provider_messages: list[ChatCompletionMessageParam] = []
         for message in messages:
             if message["role"] == "system":
                 provider_messages.append({"role": "system", "content": message["content"]})
             else:
                 provider_messages.append({"role": "user", "content": message["content"]})
-        with generation(name, self.config.model, messages) as span:
+        model = self.config.model_for(task)
+        with generation(name, model, messages) as span:
             response = await self.client.chat.completions.create(
-                model=self.config.model,
+                model=model,
                 messages=provider_messages,
                 response_format={"type": "json_object"},
                 temperature=self.config.temperature,

@@ -3,7 +3,12 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Literal, Protocol, TypedDict
 
-from helpdesk_agent.domain.models.browser import PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.browser import (
+    BrowserPlan,
+    BrowserReactAction,
+    PlaywrightAssessment,
+    PlaywrightEvaluation,
+)
 from helpdesk_agent.domain.models.triage import TriageResult
 
 
@@ -13,7 +18,13 @@ class ChatMessage(TypedDict):
 
 
 class LLMPort(Protocol):
-    def generate(self, name: str, messages: list[ChatMessage]) -> AbstractAsyncContextManager[str | None]: ...
+    def generate(
+        self,
+        name: str,
+        messages: list[ChatMessage],
+        *,
+        task: str,
+    ) -> AbstractAsyncContextManager[str | None]: ...
 
 
 class ReasoningPort(Protocol):
@@ -23,6 +34,20 @@ class ReasoningPort(Protocol):
         body: str,
         history_snippets: list[str] | None = None,
     ) -> TriageResult: ...
+
+    async def reflect_triage(self, result: TriageResult, subject: str, body: str) -> TriageResult: ...
+
+    async def plan_browser(self, target_url: str, expected_error: str, summary: str) -> BrowserPlan: ...
+
+    async def react_browser(
+        self,
+        target_url: str,
+        expected_error: str,
+        summary: str,
+        inspection_order: list[str],
+        observations: list[dict[str, Any]],
+        round_number: int,
+    ) -> BrowserReactAction: ...
 
     async def assess_playwright_validation(
         self,
@@ -36,6 +61,10 @@ class ReasoningPort(Protocol):
     async def draft_clarification(self, triage: TriageResult, raw_text: str) -> str: ...
 
     async def draft_resolution(self, faq_article: dict[str, Any], raw_text: str) -> str: ...
+
+    def fallback_clarification(self, triage: TriageResult, raw_text: str) -> str: ...
+
+    def fallback_resolution(self, faq_article: dict[str, Any], raw_text: str) -> str: ...
 
 
 class TicketingPort(Protocol):
@@ -92,6 +121,14 @@ class BrowserPort(Protocol):
     def validate_target(self, target_url: str | None, report: str) -> tuple[str | None, str]: ...
 
     async def validate(self, target_url: str) -> dict[str, Any]: ...
+
+    def open_session(self, target_url: str) -> AbstractAsyncContextManager[BrowserSessionPort]: ...
+
+
+class BrowserSessionPort(Protocol):
+    async def navigate(self) -> dict[str, Any]: ...
+
+    async def inspect(self, tool: str) -> dict[str, Any]: ...
 
 
 class DeliveryResult(Protocol):

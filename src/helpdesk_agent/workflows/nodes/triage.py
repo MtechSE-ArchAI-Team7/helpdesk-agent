@@ -83,6 +83,23 @@ async def _triage_node(self: WorkflowContext, state: GraphState) -> GraphState:
 
     try:
         triage_result = await self.llm_client.triage_email(subject, body, history_snippets=history_snippets)
+        try:
+            reflected_result = await self.llm_client.reflect_triage(triage_result, subject, body)
+        except LLMError as exc:
+            workflow_state.record_history(
+                "triage_reflection", "failed", f"Initial triage retained ({type(exc).__name__})"
+            )
+            logger.warning(
+                "case=%s stage=triage_reflection status=failed error_type=%s",
+                case_id,
+                type(exc).__name__,
+            )
+        else:
+            triage_result = reflected_result
+            workflow_state.record_history(
+                "triage_reflection", "completed", "Reviewed initial classification against current report"
+            )
+            logger.info("case=%s stage=triage_reflection status=completed", case_id)
         state["triage_result"] = triage_result
 
         workflow_state.triage = {
