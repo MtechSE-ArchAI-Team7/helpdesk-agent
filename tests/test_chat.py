@@ -1,6 +1,7 @@
 import unittest
 
-from helpdesk_agent.modules.chat.service import Conversation, ConversationStore
+from helpdesk_agent.domain.models.conversation import Conversation
+from helpdesk_agent.infrastructure.persistence.conversations import ConversationStore
 
 
 class TestConversation(unittest.TestCase):

@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from helpdesk_agent.config import A2AConfig, LangfuseConfig, LLMConfig, MemoryConfig, TriageConfig
-from helpdesk_agent.modules.playwright import PlaywrightAssessment, PlaywrightEvaluation
-from helpdesk_agent.modules.triage.llm import LLMError, LLMTriageClient
-from helpdesk_agent.modules.triage.schema import TriageResult
+from helpdesk_agent.config.settings import A2AConfig, LangfuseConfig, LLMConfig, MemoryConfig, TriageConfig
+from helpdesk_agent.domain.models.browser import PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.infrastructure.llm.client import LLMError, LLMTriageClient
 
 pytestmark = pytest.mark.unit
 
@@ -108,7 +108,7 @@ async def test_llm_response_failures_are_explicit(method, args, content):
     guardrails = MagicMock()
     guardrails.validate_input = AsyncMock()
     guardrails.validate_output = AsyncMock()
-    with patch("helpdesk_agent.modules.triage.llm.AsyncOpenAI") as constructor:
+    with patch("helpdesk_agent.infrastructure.llm.transport.AsyncOpenAI") as constructor:
         response = MagicMock()
         response.choices[0].message.content = content
         constructor.return_value.chat.completions.create = AsyncMock(return_value=response)
@@ -122,7 +122,7 @@ async def test_llm_request_uses_configured_temperature():
     guardrails = MagicMock()
     guardrails.validate_input = AsyncMock()
     guardrails.validate_output = AsyncMock()
-    with patch("helpdesk_agent.modules.triage.llm.AsyncOpenAI") as constructor:
+    with patch("helpdesk_agent.infrastructure.llm.transport.AsyncOpenAI") as constructor:
         response = MagicMock()
         response.choices[0].message.content = json.dumps(
             {
@@ -146,7 +146,7 @@ async def test_llm_drafts_and_missing_key():
     guardrails = MagicMock()
     with pytest.raises(LLMError, match="API_KEY"):
         LLMTriageClient(LLMConfig(), guardrails=guardrails)
-    with patch("helpdesk_agent.modules.triage.llm.AsyncOpenAI"):
+    with patch("helpdesk_agent.infrastructure.llm.transport.AsyncOpenAI"):
         client = LLMTriageClient(LLMConfig(api_key="test"), guardrails=guardrails)
         result = TriageResult(
             service="identity",
@@ -188,7 +188,7 @@ async def test_llm_browser_models_are_validated(method, model, payload, args):
     guardrails = MagicMock()
     guardrails.validate_input = AsyncMock()
     guardrails.validate_output = AsyncMock()
-    with patch("helpdesk_agent.modules.triage.llm.AsyncOpenAI") as constructor:
+    with patch("helpdesk_agent.infrastructure.llm.transport.AsyncOpenAI") as constructor:
         response = MagicMock()
         response.choices[0].message.content = json.dumps(payload)
         constructor.return_value.chat.completions.create = AsyncMock(return_value=response)

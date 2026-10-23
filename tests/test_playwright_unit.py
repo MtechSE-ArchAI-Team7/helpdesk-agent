@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 import pydantic.root_model  # noqa: F401 - initialize the SDK's Pydantic v2 root model module
 import pytest
 
-from helpdesk_agent.config import MCPConfig
-from helpdesk_agent.mcp import MCPResponse
-from helpdesk_agent.modules.playwright import PlaywrightValidationFlow
+from helpdesk_agent.config.settings import MCPConfig
+from helpdesk_agent.infrastructure.mcp.browser import PlaywrightValidationFlow
+from helpdesk_agent.infrastructure.mcp.transport import MCPResponse
 
 pytestmark = pytest.mark.unit
 

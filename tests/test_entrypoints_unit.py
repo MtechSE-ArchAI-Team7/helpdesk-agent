@@ -9,16 +9,19 @@ import pytest
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
-from helpdesk_agent import cli, dependencies, main, memory_setup
-from helpdesk_agent.config import A2AConfig, LLMConfig, MCPConfig, MemoryConfig
-from helpdesk_agent.models import WorkflowState
+import helpdesk_agent.api.app as main
+import helpdesk_agent.api.dependencies as dependencies
+from helpdesk_agent import cli, memory_setup
+from helpdesk_agent.api.routes.email import email_webhook
+from helpdesk_agent.api.routes.ticketing import JiraMemoryWebhook, jira_memory_webhook
+from helpdesk_agent.api.schemas.email import EmailWebhook
+from helpdesk_agent.application.chat import handle_chat_message
+from helpdesk_agent.config.settings import A2AConfig, LLMConfig, MCPConfig, MemoryConfig
+from helpdesk_agent.domain.models.chat_response import ChatMessage
+from helpdesk_agent.domain.models.workflow import WorkflowState
+from helpdesk_agent.infrastructure.memory.agentcore import MemoryError
+from helpdesk_agent.infrastructure.persistence.conversations import ConversationStore
 from helpdesk_agent.modules.chat import router as chat_router
-from helpdesk_agent.modules.chat.schema import ChatMessage
-from helpdesk_agent.modules.chat.service import ConversationStore, handle_chat_message
-from helpdesk_agent.modules.email.router import email_webhook
-from helpdesk_agent.modules.email.schema import EmailWebhook
-from helpdesk_agent.modules.memory import MemoryError
-from helpdesk_agent.modules.ticketing.router import JiraMemoryWebhook, jira_memory_webhook
 
 pytestmark = pytest.mark.unit
 
@@ -119,6 +122,7 @@ async def test_jira_memory_webhook_validates_and_refetches(workflow, case):
         expected = 400
     elif case == "mcp_disabled":
         workflow.mcp_adapter = None
+        workflow.mcp_enabled = False
         expected = 503
     elif case == "fetch_failed":
         workflow.ticket_flow.get_ticket.return_value = {"status": "failed"}
@@ -270,7 +274,7 @@ def test_memory_provisioning_rejects_invalid_retention(monkeypatch, days):
 @pytest.fixture
 def handler(monkeypatch):
     with patch("boto3.client"):
-        module = importlib.import_module("helpdesk_agent.modules.aws_lambda.handler")
+        module = importlib.import_module("helpdesk_agent.api.lambda_handler")
     monkeypatch.setattr(module, "_client", MagicMock())
     monkeypatch.setattr(module, "AGENT_RUNTIME_ARN", "test-runtime")
     monkeypatch.setattr(module, "WEBHOOK_SECRET", "")

@@ -9,20 +9,19 @@ from botocore import UNSIGNED
 from botocore.config import Config
 from botocore.stub import ANY, Stubber
 
-from helpdesk_agent.config import MemoryConfig
-from helpdesk_agent.core.workflow import HelpdeskWorkflow
-from helpdesk_agent.modules.a2a.diagnosis import build_case_input
-from helpdesk_agent.modules.chat.service import ConversationStore, handle_chat_message
-from helpdesk_agent.modules.memory import AgentCoreMemory, MemoryError, redact_shared_text
-from helpdesk_agent.modules.triage.schema import TriageResult
+from helpdesk_agent.api.factory import HelpdeskWorkflow
+from helpdesk_agent.application.chat import handle_chat_message
+from helpdesk_agent.application.diagnosis import build_case_input
+from helpdesk_agent.config.settings import MemoryConfig
+from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.infrastructure.memory.agentcore import AgentCoreMemory, MemoryError, redact_shared_text
+from helpdesk_agent.infrastructure.persistence.conversations import ConversationStore
 
 MEMORY_ID = "HelpdeskMemory-abcdefghij"
 
 
 def config(**overrides):
-    return MemoryConfig(
-        enabled=True, memory_id=MEMORY_ID, region="us-west-2", organization_id="acme", **overrides
-    )
+    return MemoryConfig(enabled=True, memory_id=MEMORY_ID, region="us-west-2", organization_id="acme", **overrides)
 
 
 def aws_client():
@@ -64,7 +63,7 @@ def test_invalid_config_rejected(overrides):
 
 
 def test_disabled_memory_does_not_contact_aws(monkeypatch):
-    from helpdesk_agent.dependencies import get_memory
+    from helpdesk_agent.api.dependencies import get_memory
 
     monkeypatch.setenv("HELPDESK_AGENT_MEMORY_ENABLED", "0")
     with patch("boto3.client") as client:
@@ -74,7 +73,7 @@ def test_disabled_memory_does_not_contact_aws(monkeypatch):
 
 @pytest.mark.parametrize("status,has_strategies", [("CREATING", True), ("ACTIVE", False), ("ACTIVE", True)])
 def test_startup_validates_resource_and_strategy_namespaces(status, has_strategies):
-    from helpdesk_agent.modules.memory import FACTS_NAMESPACE, SUMMARY_NAMESPACE
+    from helpdesk_agent.infrastructure.memory.agentcore import FACTS_NAMESPACE, SUMMARY_NAMESPACE
 
     control = MagicMock()
     control.get_memory.return_value = {
@@ -83,7 +82,9 @@ def test_startup_validates_resource_and_strategy_namespaces(status, has_strategi
             "strategies": [
                 {"status": "ACTIVE", "namespaceTemplates": [SUMMARY_NAMESPACE]},
                 {"status": "ACTIVE", "namespaceTemplates": [FACTS_NAMESPACE]},
-            ] if has_strategies else [],
+            ]
+            if has_strategies
+            else [],
         }
     }
     data = MagicMock()
@@ -128,13 +129,19 @@ async def test_history_paginates_orders_and_excludes_replayed_incoming_message()
     client = aws_client()
     memory = AgentCoreMemory(config(history_events=3), client)
     arguments = {
-        "memoryId": MEMORY_ID, "actorId": "acme", "sessionId": "HELP-1", "includePayloads": True, "maxResults": 3
+        "memoryId": MEMORY_ID,
+        "actorId": "acme",
+        "sessionId": "HELP-1",
+        "includePayloads": True,
+        "maxResults": 3,
     }
     with Stubber(client) as stub:
         stub.add_response(
             "list_events",
-            {"events": [event("Current report", identity="message-1:USER"), event("Which browser?", "ASSISTANT")],
-             "nextToken": "next"},
+            {
+                "events": [event("Current report", identity="message-1:USER"), event("Which browser?", "ASSISTANT")],
+                "nextToken": "next",
+            },
             arguments,
         )
         stub.add_response(
@@ -208,16 +215,14 @@ async def test_aws_errors_are_explicit_without_logging_sensitive_request(caplog)
 
 
 def test_shared_redaction():
-    text = redact_shared_text(
-        'alice@example.com password="hidden value" api_key=hidden Authorization: Bearer hidden'
-    )
+    text = redact_shared_text('alice@example.com password="hidden value" api_key=hidden Authorization: Bearer hidden')
     assert "alice@example.com" not in text
     assert "hidden" not in text
     assert "[REDACTED]" in text
 
 
 def test_browser_context_only_uses_this_tickets_user_reports():
-    from helpdesk_agent.models import WorkflowState
+    from helpdesk_agent.domain.models.workflow import WorkflowState
 
     run = workflow(AgentCoreMemory(config(), MemoryBackend()))
     state = WorkflowState(case_id="HELP-1", summary="Still broken")
@@ -252,10 +257,11 @@ class MemoryBackend:
 
     def list_events(self, **kwargs):
         events = [
-            item for item in reversed(self.events)
+            item
+            for item in reversed(self.events)
             if item["actorId"] == kwargs["actorId"] and item["sessionId"] == kwargs["sessionId"]
         ]
-        return {"events": events[:kwargs["maxResults"]]}
+        return {"events": events[: kwargs["maxResults"]]}
 
     def retrieve_memory_records(self, **kwargs):
         assert kwargs["namespacePath"] == "/org/acme/tickets/"
@@ -266,10 +272,16 @@ def workflow(memory, *, confidence=0.9):
     llm = MagicMock()
     llm.triage_email = AsyncMock(
         return_value=TriageResult(
-            service="identity", issue_type="access", priority="high", confidence=confidence,
+            service="identity",
+            issue_type="access",
+            priority="high",
+            confidence=confidence,
             missing_info=["browser"] if confidence < 0.6 else [],
             clarifying_questions=["Which browser?"] if confidence < 0.6 else [],
-            summary="Login failure", source="email", sender="user@example.com", raw_text="Login failure",
+            summary="Login failure",
+            source="email",
+            sender="user@example.com",
+            raw_text="Login failure",
         )
     )
     llm.draft_clarification = AsyncMock(return_value="Which browser?")
@@ -277,8 +289,11 @@ def workflow(memory, *, confidence=0.9):
     result.ticket_flow.create_ticket = AsyncMock(return_value={"status": "created", "ticket_id": "HELP-1"})
     result.ticket_flow.get_ticket = AsyncMock(
         return_value={
-            "status": "success", "ticket_id": "HELP-1", "summary": "Login failure",
-            "description": "Original issue", "comments": [],
+            "status": "success",
+            "ticket_id": "HELP-1",
+            "summary": "Login failure",
+            "description": "Original issue",
+            "comments": [],
         }
     )
     return result
@@ -317,8 +332,12 @@ async def test_email_followup_keeps_clarification_limit_in_jira():
         {"body": "Pending clarifications: Which URL?"},
     ]
     state = await run.run(
-        {"subject": "[HELP-1] Login failure", "summary": "Still failing", "source": "email",
-         "metadata": {"message_id": "email-1"}}
+        {
+            "subject": "[HELP-1] Login failure",
+            "summary": "Still failing",
+            "source": "email",
+            "metadata": {"message_id": "email-1"},
+        }
     )
     assert state.current_step == "diagnosis_required"
     run.llm_client.draft_clarification.assert_not_awaited()
@@ -332,8 +351,12 @@ async def test_failed_email_delivery_not_saved_as_assistant_turn():
     run = workflow(AgentCoreMemory(config(), backend), confidence=0.3)
     run.mail_flow.reply_email = AsyncMock(return_value={"status": "failed", "error": "mail unavailable"})
     await run.run(
-        {"subject": "[HELP-1] Login failure", "summary": "Still failing", "source": "email",
-         "metadata": {"message_id": "email-1"}}
+        {
+            "subject": "[HELP-1] Login failure",
+            "summary": "Still failing",
+            "source": "email",
+            "metadata": {"message_id": "email-1"},
+        }
     )
     conversational = [
         item["payload"][0]["conversational"] for item in backend.events if "conversational" in item["payload"][0]
@@ -347,8 +370,12 @@ async def test_sent_email_response_is_saved_for_the_next_reply():
     run = workflow(AgentCoreMemory(config(), backend), confidence=0.3)
     run.mail_flow.reply_email = AsyncMock(return_value={"status": "sent"})
     await run.run(
-        {"subject": "[HELP-1] Login failure", "summary": "Still failing", "source": "email",
-         "metadata": {"message_id": "email-1"}}
+        {
+            "subject": "[HELP-1] Login failure",
+            "summary": "Still failing",
+            "source": "email",
+            "metadata": {"message_id": "email-1"},
+        }
     )
     history = await run.memory.history("HELP-1", "email-2")
     assert history == ["USER: Still failing", "ASSISTANT: Which browser?"]
@@ -361,8 +388,12 @@ async def test_new_email_saves_original_report_before_acknowledgment():
     run = workflow(memory, confidence=0.3)
     run.mail_flow.reply_email = AsyncMock(return_value={"status": "sent"})
     await run.run(
-        {"subject": "Login failure", "summary": "Original report", "source": "email",
-         "metadata": {"message_id": "email-1"}}
+        {
+            "subject": "Login failure",
+            "summary": "Original report",
+            "source": "email",
+            "metadata": {"message_id": "email-1"},
+        }
     )
     history = await memory.history("HELP-1", "email-2")
     assert history[0] == "USER: Original report"
@@ -374,6 +405,7 @@ async def test_new_email_saves_original_report_before_acknowledgment():
 async def test_memory_outage_is_reported_and_jira_workflow_still_runs():
     memory = MagicMock(spec=AgentCoreMemory)
     memory.config = config()
+    memory.context_chars = memory.config.context_chars
     memory.history = AsyncMock(side_effect=MemoryError("History unavailable"))
     memory.similar = AsyncMock(side_effect=MemoryError("Search unavailable"))
     memory.save_message = AsyncMock(side_effect=MemoryError("Write unavailable"))

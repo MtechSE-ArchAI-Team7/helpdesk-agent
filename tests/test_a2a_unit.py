@@ -9,17 +9,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pydantic.root_model  # noqa: F401 - initialize the SDK's Pydantic v2 root model module
 import pytest
 
-from helpdesk_agent.config import A2AConfig
-from helpdesk_agent.models import WorkflowState
-from helpdesk_agent.modules.a2a.agent_card import A2A_RPC_PATH, build_agent_card
-from helpdesk_agent.modules.a2a.diagnosis import (
+from helpdesk_agent.api.a2a.agent_card import A2A_RPC_PATH, build_agent_card
+from helpdesk_agent.api.a2a.executor import HelpdeskAgentExecutor
+from helpdesk_agent.application.diagnosis import (
     build_case_input,
-    build_send_message_envelope,
     current_trace_id,
-    envelope_digest,
 )
-from helpdesk_agent.modules.a2a.executor import HelpdeskAgentExecutor
-from helpdesk_agent.modules.triage.schema import TriageResult
+from helpdesk_agent.config.settings import A2AConfig
+from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.domain.models.workflow import WorkflowState
+from helpdesk_agent.infrastructure.a2a.envelopes import build_send_message_envelope, envelope_digest
 
 pytestmark = pytest.mark.unit
 
@@ -36,7 +35,7 @@ def _triage() -> TriageResult:
 
 
 def test_diagnosis_case_payload_has_defaults_and_valid_time_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("helpdesk_agent.modules.a2a.diagnosis.current_trace_id", lambda: None)
+    monkeypatch.setattr("helpdesk_agent.application.diagnosis.current_trace_id", lambda: None)
     state = WorkflowState(case_id="case-1", summary="Cannot access VPN")
     payload = build_case_input(state, None, None)
     assert payload["case_id"] == "case-1"
@@ -58,7 +57,7 @@ def test_diagnosis_case_payload_has_defaults_and_valid_time_window(monkeypatch: 
 
 
 def test_diagnosis_payload_adds_triage_ticket_memory_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("helpdesk_agent.modules.a2a.diagnosis.current_trace_id", lambda: "ab" * 16)
+    monkeypatch.setattr("helpdesk_agent.application.diagnosis.current_trace_id", lambda: "ab" * 16)
     state = WorkflowState(
         case_id="case-1",
         summary="Cannot access VPN",
@@ -176,7 +175,7 @@ def _chat_response(step: str = "done") -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_executor_creates_new_task_and_requires_input(monkeypatch: pytest.MonkeyPatch) -> None:
-    from helpdesk_agent.modules.a2a import executor as executor_module
+    from helpdesk_agent.api.a2a import executor as executor_module
 
     _FakeUpdater.instances.clear()
     task = SimpleNamespace(id="task-1", context_id="context-1")
@@ -207,7 +206,7 @@ async def test_executor_creates_new_task_and_requires_input(monkeypatch: pytest.
 
 @pytest.mark.asyncio
 async def test_executor_completes_with_artifact_and_surfaces_failures(monkeypatch: pytest.MonkeyPatch) -> None:
-    from helpdesk_agent.modules.a2a import executor as executor_module
+    from helpdesk_agent.api.a2a import executor as executor_module
 
     _FakeUpdater.instances.clear()
     monkeypatch.setattr(executor_module, "TaskUpdater", _FakeUpdater)
@@ -238,7 +237,7 @@ async def test_executor_completes_with_artifact_and_surfaces_failures(monkeypatc
 
 @pytest.mark.asyncio
 async def test_executor_cancel_is_safe_without_task_and_cancels_active_task(monkeypatch: pytest.MonkeyPatch) -> None:
-    from helpdesk_agent.modules.a2a import executor as executor_module
+    from helpdesk_agent.api.a2a import executor as executor_module
 
     _FakeUpdater.instances.clear()
     monkeypatch.setattr(executor_module, "TaskUpdater", _FakeUpdater)

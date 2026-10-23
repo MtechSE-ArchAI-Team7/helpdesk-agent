@@ -1,8 +1,8 @@
 import pytest
 
-from helpdesk_agent.mcp import MCPProxyAdapter
+from helpdesk_agent.infrastructure.mcp.ticketing import JiraTicketFlow, to_jira_priority
+from helpdesk_agent.infrastructure.mcp.transport import MCPProxyAdapter
 from helpdesk_agent.mock_mcp_server import MockMCPServer
-from helpdesk_agent.modules.ticketing.service import JiraTicketFlow, to_jira_priority
 
 
 def test_to_jira_priority_mapping() -> None:
@@ -85,7 +85,7 @@ async def test_get_ticket_atlassian_payload_with_workflow_status() -> None:
     import json
     from unittest.mock import patch
 
-    from helpdesk_agent.config import MCPConfig
+    from helpdesk_agent.config.settings import MCPConfig
 
     payload = {
         "id": "10019",
@@ -133,8 +133,8 @@ async def test_get_ticket_atlassian_payload_with_workflow_status() -> None:
 
     adapter = MCPProxyAdapter(MCPConfig(atlassian_url="http://fake:8000/mcp", jira_project_key="AH"))
     with (
-        patch("helpdesk_agent.mcp.streamablehttp_client", lambda *a, **k: _FakeHTTP()),
-        patch("helpdesk_agent.mcp.ClientSession", _FakeSession),
+        patch("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", lambda *a, **k: _FakeHTTP()),
+        patch("helpdesk_agent.infrastructure.mcp.transport.ClientSession", _FakeSession),
     ):
         flow = JiraTicketFlow(adapter)
         result = await flow.get_ticket("AH-19")

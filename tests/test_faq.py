@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from helpdesk_agent.config import MCPConfig
-from helpdesk_agent.mcp import GatewayIAMAuth, MCPProxyAdapter
+from helpdesk_agent.config.settings import MCPConfig
+from helpdesk_agent.infrastructure.knowledge.faq import FAQFlow
+from helpdesk_agent.infrastructure.mcp.transport import GatewayIAMAuth, MCPProxyAdapter
 from helpdesk_agent.mock_mcp_server import MockMCPServer
-from helpdesk_agent.modules.faq.service import FAQFlow
 
 
 @pytest.fixture(scope="module")
@@ -47,15 +47,18 @@ async def test_faq_search_with_mcp(mock_server) -> None:
 async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_results(monkeypatch, auth_mode) -> None:
     calls = []
     payload = {
-        "retrievalResults": [{
-            "content": {"type": "TEXT", "text": "Approved troubleshooting steps"},
-            "score": 0.85,
-            "metadata": {"title": "Checkout errors"},
-            "location": {"s3Location": {"uri": "s3://knowledge/runbook.txt"}},
-        }, {
-            "content": {"type": "IMAGE", "byteContent": "image-data"},
-            "score": 0.99,
-        }],
+        "retrievalResults": [
+            {
+                "content": {"type": "TEXT", "text": "Approved troubleshooting steps"},
+                "score": 0.85,
+                "metadata": {"title": "Checkout errors"},
+                "location": {"s3Location": {"uri": "s3://knowledge/runbook.txt"}},
+            },
+            {
+                "content": {"type": "IMAGE", "byteContent": "image-data"},
+                "score": 0.99,
+            },
+        ],
     }
 
     @asynccontextmanager
@@ -83,23 +86,32 @@ async def test_knowledge_search_sends_prefixed_direct_arguments_and_normalizes_r
         async def call_tool(self, name, arguments):
             calls.append((name, arguments))
             return SimpleNamespace(
-                isError=False, content=[SimpleNamespace(text=json.dumps(payload))], structuredContent={},
+                isError=False,
+                content=[SimpleNamespace(text=json.dumps(payload))],
+                structuredContent={},
             )
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_transport)
-    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
-    adapter = MCPProxyAdapter(MCPConfig(
-        faq_url="https://rag.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp",
-        faq_tool_prefix="ops-knowledge___",
-        faq_auth_mode=auth_mode,
-        headers={"Authorization": "Bearer test-token"},
-    ))
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", fake_transport)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.ClientSession", lambda *_: FakeSession())
+    adapter = MCPProxyAdapter(
+        MCPConfig(
+            faq_url="https://rag.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp",
+            faq_tool_prefix="ops-knowledge___",
+            faq_auth_mode=auth_mode,
+            headers={"Authorization": "Bearer test-token"},
+        )
+    )
 
     result = await FAQFlow(adapter).search("Checkout returns HTTP 500", max_results=3)
 
-    assert calls == [("ops-knowledge___Retrieve", {
-        "retrievalQuery": {"text": "Checkout returns HTTP 500"},
-    })]
+    assert calls == [
+        (
+            "ops-knowledge___Retrieve",
+            {
+                "retrievalQuery": {"text": "Checkout returns HTTP 500"},
+            },
+        )
+    ]
     assert result["count"] == 1
     assert result["results"][0]["body"] == "Approved troubleshooting steps"
     assert result["results"][0]["title"] == "Checkout errors"

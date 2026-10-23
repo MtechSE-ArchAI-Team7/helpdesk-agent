@@ -7,8 +7,8 @@ import httpx
 import pytest
 from mcp.types import Tool
 
-from helpdesk_agent.config import MCPConfig
-from helpdesk_agent.mcp import GatewayIAMAuth
+from helpdesk_agent.config.settings import MCPConfig
+from helpdesk_agent.infrastructure.mcp.transport import GatewayIAMAuth
 from tests.integration import test_mcp as discovery
 
 pytestmark = pytest.mark.unit

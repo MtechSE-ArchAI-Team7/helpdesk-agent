@@ -12,8 +12,8 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import Tool
 
-from helpdesk_agent.config import MCPConfig
-from helpdesk_agent.mcp import GatewayIAMAuth
+from helpdesk_agent.config.settings import MCPConfig
+from helpdesk_agent.infrastructure.mcp.transport import GatewayIAMAuth
 
 SERVICES = ("atlassian", "zohomail", "faq", "playwright")
 

@@ -37,10 +37,10 @@ from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
-from .config import LangfuseConfig
+from helpdesk_agent.config.settings import LangfuseConfig
 
 if TYPE_CHECKING:
-    from .models import WorkflowState
+    from helpdesk_agent.domain.models.workflow import WorkflowState
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +107,7 @@ def emit_workflow_event(
 def operation_span(name: str, session_id: str | None = None) -> Iterator[trace.Span]:
     token = _session_id.set(session_id or _session_id.get())
     try:
-        with get_tracer().start_as_current_span(
-            name, record_exception=False, set_status_on_exception=False
-        ) as span:
+        with get_tracer().start_as_current_span(name, record_exception=False, set_status_on_exception=False) as span:
             if _session_id.get():
                 span.set_attribute("langfuse.session.id", str(_session_id.get()))
             try:
@@ -218,3 +216,15 @@ def setup_observability(app: FastAPI) -> None:
 def get_tracer(name: str = "helpdesk_agent") -> trace.Tracer:
     """Get a tracer for creating custom spans in workflow/module code."""
     return trace.get_tracer(name)
+
+
+def current_trace_id() -> str | None:
+    """Return the current OTEL trace id as hex, or None when unsampled/unavailable."""
+    try:
+        from opentelemetry.trace import get_current_span
+    except ImportError:
+        return None
+    span_context = get_current_span().get_span_context()
+    if span_context.trace_id == 0:
+        return None
+    return format(span_context.trace_id, "032x")

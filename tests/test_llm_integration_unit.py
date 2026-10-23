@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from helpdesk_agent.config import LLMConfig
+from helpdesk_agent.config.settings import LLMConfig
 from tests.integration import test_llm
 
 pytestmark = pytest.mark.unit

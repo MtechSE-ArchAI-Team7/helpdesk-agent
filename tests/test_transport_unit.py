@@ -14,9 +14,15 @@ import pytest
 from botocore.credentials import Credentials
 from botocore.exceptions import NoCredentialsError, ReadTimeoutError
 
-from helpdesk_agent.config import A2AConfig, MCPConfig
-from helpdesk_agent.mcp import GatewayIAMAuth, MCPProxyAdapter, _content_to_dict, _root_exception, _safe_error_detail
-from helpdesk_agent.modules.a2a.client import A2AClientManager, _extract_task_id, _try_parse_json
+from helpdesk_agent.config.settings import A2AConfig, MCPConfig
+from helpdesk_agent.infrastructure.a2a.client import A2AClientManager, _extract_task_id, _try_parse_json
+from helpdesk_agent.infrastructure.mcp.transport import (
+    GatewayIAMAuth,
+    MCPProxyAdapter,
+    _content_to_dict,
+    _root_exception,
+    _safe_error_detail,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -56,8 +62,8 @@ def _patch_mcp_session(monkeypatch: pytest.MonkeyPatch, result: SimpleNamespace)
             calls.append(("call", name, arguments))
             return result
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_transport)
-    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", fake_transport)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.ClientSession", lambda *_: FakeSession())
     return calls
 
 
@@ -207,8 +213,8 @@ async def test_mcp_faq_iam_auth_uses_discovered_or_configured_region_and_strips_
         async def call_tool(self, name, arguments):
             return _result()
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_transport)
-    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", fake_transport)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.ClientSession", lambda *_: FakeSession())
     adapter = MCPProxyAdapter(
         MCPConfig(
             faq_url=url,
@@ -243,7 +249,7 @@ async def test_mcp_faq_auth_validation_and_transport_failure(monkeypatch: pytest
         raise RuntimeError("connect https://private.example/path password=hunter2")
         yield
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", failing_transport)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", failing_transport)
     adapter = MCPProxyAdapter(MCPConfig())
     result = await adapter.call_tool("ordinary")
     assert result.status == "failed"
@@ -282,7 +288,7 @@ async def test_mcp_sequence_rejects_mixed_urls_stops_on_failure_and_polls(monkey
         raise RuntimeError("network broke")
         yield
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", broken_transport)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", broken_transport)
     polled = await adapter.get_action_status("same-id")
     assert (polled.action_id, polled.status, polled.error) == ("same-id", "failed", "network broke")
 
@@ -303,8 +309,8 @@ async def test_mcp_sequence_rejects_mixed_urls_stops_on_failure_and_polls(monkey
         async def call_tool(self, name, arguments):
             raise RuntimeError("tool unavailable")
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", available_transport)
-    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FailingSession())
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", available_transport)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.ClientSession", lambda *_: FailingSession())
     failed_sequence = await adapter.call_tool_sequence([("first", {})])
     assert len(failed_sequence) == 1
     assert failed_sequence[0].status == "failed"
@@ -342,8 +348,8 @@ async def test_mcp_playwright_sequence_lists_catalog_and_translates_all_tool_fam
             calls.append((name, arguments))
             return _result()
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_transport)
-    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", fake_transport)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.ClientSession", lambda *_: FakeSession())
     adapter = MCPProxyAdapter(
         MCPConfig(
             playwright_url="http://browser/mcp",
@@ -448,26 +454,26 @@ async def test_a2a_agentcore_handoff_handles_all_outcomes(monkeypatch: pytest.Mo
     assert (missing.submitted, missing.reason) == (False, "missing bearer token for AgentCore runtime")
 
     success = {"result": {"kind": "task", "id": "remote-task"}}
-    monkeypatch.setattr("helpdesk_agent.modules.a2a.client.asyncio.to_thread", AsyncMock(return_value=success))
+    monkeypatch.setattr("helpdesk_agent.infrastructure.a2a.client.asyncio.to_thread", AsyncMock(return_value=success))
     first = await manager._send_via_agentcore("remote", "arn", envelope, "secret")
     second = await manager._send_via_agentcore("remote", "arn", envelope, "secret")
     assert first.submitted and first.task_id == "remote-task"
     assert first.run_id == second.run_id
 
     monkeypatch.setattr(
-        "helpdesk_agent.modules.a2a.client.asyncio.to_thread",
+        "helpdesk_agent.infrastructure.a2a.client.asyncio.to_thread",
         AsyncMock(return_value={"error": {"message": "rejected"}}),
     )
     rejected = await manager._send_via_agentcore("remote", "arn", envelope, "secret")
     assert (rejected.submitted, rejected.reason) == (False, "JSON-RPC error: rejected")
 
     timeout = ReadTimeoutError(endpoint_url="https://runtime")
-    monkeypatch.setattr("helpdesk_agent.modules.a2a.client.asyncio.to_thread", AsyncMock(side_effect=timeout))
+    monkeypatch.setattr("helpdesk_agent.infrastructure.a2a.client.asyncio.to_thread", AsyncMock(side_effect=timeout))
     timed_out = await manager._send_via_agentcore("remote", "arn", envelope, "secret")
     assert timed_out.submitted and timed_out.reason == "submitted; response not awaited"
 
     monkeypatch.setattr(
-        "helpdesk_agent.modules.a2a.client.asyncio.to_thread",
+        "helpdesk_agent.infrastructure.a2a.client.asyncio.to_thread",
         AsyncMock(side_effect=RuntimeError("boto failed")),
     )
     failed = await manager._send_via_agentcore("remote", "arn", envelope, "secret")
@@ -484,7 +490,7 @@ async def test_a2a_agentcore_handoff_handles_all_outcomes(monkeypatch: pytest.Mo
     async def run_inline(function, *args):
         return function(*args)
 
-    monkeypatch.setattr("helpdesk_agent.modules.a2a.client.asyncio.to_thread", run_inline)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.a2a.client.asyncio.to_thread", run_inline)
     invoked = await manager._send_via_agentcore("remote", "arn:runtime", envelope, "secret-token")
     assert invoked.submitted and invoked.task_id == "invoked-task"
     event_handlers["before-sign.bedrock-agentcore.InvokeAgentRuntime"](SimpleNamespace(headers=request_headers))
@@ -510,7 +516,7 @@ async def test_a2a_agentcore_handoff_handles_all_outcomes(monkeypatch: pytest.Mo
 
 @pytest.mark.asyncio
 async def test_a2a_message_client_cache_and_close(monkeypatch: pytest.MonkeyPatch) -> None:
-    from helpdesk_agent.modules.a2a import client as a2a_client
+    from helpdesk_agent.infrastructure.a2a import client as a2a_client
 
     card = MagicMock()
     resolver = MagicMock()

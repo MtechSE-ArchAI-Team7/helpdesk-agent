@@ -217,36 +217,91 @@ reports as potentially sensitive: they include model inputs and outputs.
 
 ## Architecture
 
-The agent is organized into domain modules:
+The agent is a modular monolith: one deployable application on Amazon Bedrock
+AgentCore Runtime, with ports-and-adapters boundaries between support behavior
+and external technologies. MCP services and downstream A2A agents remain
+independently deployed; this package refactor does not change their contracts.
 
-```
+```text
 src/helpdesk_agent/
-├── main.py                 # FastAPI app factory
-├── dependencies.py         # Dependency injection providers
-├── config.py               # Configuration (MCP, LLM, Triage)
-├── mcp.py                  # MCP proxy adapter (async, httpx)
-├── models.py               # WorkflowState model
-├── core/
-│   └── workflow.py         # LangGraph workflow orchestrator
-└── modules/
-    ├── email/
-    │   ├── router.py       # POST /webhooks/email
-    │   ├── schema.py       # EmailWebhook, WebhookResponse
-    │   └── service.py      # ZohoMailFlow (MCP)
-    ├── triage/
-    │   ├── schema.py       # TriageResult
-    │   └── llm.py          # LLM triage client (OpenAI)
-    ├── faq/
-    │   └── service.py      # FAQFlow (MCP)
-    ├── ticketing/
-    │   └── service.py      # JiraTicketFlow (MCP)
-    ├── playwright.py       # Browser feasibility and validation flow
-    ├── a2a/                # Agent2Agent interface and diagnosis hand-off
-    └── chat/
-        ├── router.py       # /chat, /conversations endpoints
-        ├── schema.py       # ChatMessage, ChatResponse
-        └── service.py      # ConversationStore
+├── api/                    # App factory, dependency wiring, routes, inbound A2A/Lambda
+├── domain/
+│   ├── models/             # Case, triage, browser, and conversation contracts
+│   └── policies/           # Clarification, FAQ relevance, ticket IDs, browser targets
+├── application/            # Chat, communication, diagnosis, and memory coordination
+├── workflows/
+│   ├── nodes/              # Ticket, triage, communication, and diagnosis nodes
+│   └── browser/            # Feasibility node and compiled validation subgraph
+├── reasoning/              # Existing structured LLM tasks and guardrails
+├── prompts/
+│   ├── triage/
+│   ├── browser/
+│   └── communication/
+├── ports/                  # Typed provider-independent capability protocols
+├── infrastructure/
+│   ├── llm/                # OpenAI-compatible transport and compatibility client
+│   ├── mcp/                # MCP transport, Jira, Zoho, and browser adapters
+│   ├── a2a/                # Outbound A2A transport and wire envelopes
+│   ├── knowledge/          # Existing MCP-backed FAQ retrieval
+│   ├── memory/             # AgentCore Memory adapter
+│   └── persistence/        # Existing in-memory conversation repository
+├── config/                 # Environment settings and validation
+├── observability/          # OpenTelemetry/Langfuse setup and workflow events
+├── main.py                 # Stable deployment/CLI entrypoint
+└── core/, modules/, ...     # Thin compatibility exports for previous imports
 ```
+
+| Package | Responsibility |
+| --- | --- |
+| `api/` | FastAPI endpoints, inbound transport validation, initialization, and composition |
+| `domain/` | Provider-independent support models, deterministic policies, and exceptions |
+| `application/` | Shared support use cases, communication, memory coordination, and diagnosis delegation |
+| `workflows/` | LangGraph state, node sequencing, routing, and browser-validation subgraph |
+| `reasoning/` | Triage, browser feasibility, and conservative evidence interpretation |
+| `prompts/` | Version-controlled instructions and deterministic email templates |
+| `ports/` | Protocols for required external capabilities and workflow execution |
+| `infrastructure/` | Concrete LLM, MCP, A2A, knowledge, memory, and persistence adapters |
+| `config/` | Existing model assignment, runtime settings, thresholds, and execution limits |
+| `observability/` | Traces, structured workflow events, and correlation identifiers |
+| `tests/` | Offline unit/architecture contracts and explicitly opted-in live integration tests |
+| `evaluations/` | DeepEval entrypoint, datasets, metrics, and execution support |
+
+Domain and ports do not depend on provider SDKs. Application services consume
+ports, not HTTP request models or the concrete LangGraph workflow. Reasoning
+consumes the LLM port; only the infrastructure adapter knows the OpenAI SDK.
+Workflows receive composed capabilities instead of constructing clients.
+[Architecture tests](tests/architecture/test_boundaries.py) enforce these import
+directions and prevent canonical modules from importing legacy facades.
+
+The [composition factory](src/helpdesk_agent/api/factory.py) retains the previous
+optional-client `HelpdeskWorkflow` constructor; the
+[canonical workflow](src/helpdesk_agent/workflows/workflow.py) accepts explicit
+capabilities. Existing import paths, HTTP/A2A schemas, environment settings, CLI
+commands, and Docker/Vercel/Lambda entrypoints remain supported. Compatibility
+modules re-export or delegate to one canonical implementation; private
+monkeypatch targets should use canonical modules. Configuration and observability
+are now packages, with their public exports retained.
+
+Browser feasibility assessment still runs **before** clarification routing so it
+can request missing details. Only the eligible validation route invokes the
+[compiled browser subgraph](src/helpdesk_agent/workflows/browser/graph.py):
+target revalidation, bounded execution, evidence interpretation, and result
+recording. Browser tools still execute in one MCP session; validation then
+continues to FAQ routing. Parent state, gate decisions, and outer workflow
+events are retained without duplicate evidence or internal subgraph fields.
+
+The refactor adds no Reflection, Planning, or ReAct capabilities, model calls,
+database, or knowledge backend. Clarification and resolution emails remain
+deterministic templates. Complete prompt and template fingerprints are checked
+against the pre-refactor behavior in
+[contract tests](tests/test_refactor_contracts.py).
+
+Live evaluations intentionally remain outside `tests/` to avoid its dummy
+credential fixtures. Their existing entrypoint is
+[`evaluations/test_triage.py`](evaluations/test_triage.py); reusable schemas,
+dataset loading, metrics, and execution helpers live in
+[`evaluations/support/`](evaluations/support/). Testing/evaluation suite counts,
+CI commands, metadata, and opt-in behavior are unchanged.
 
 ## Workflow
 

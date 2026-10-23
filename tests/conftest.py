@@ -65,7 +65,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 def live_llm_config(monkeypatch: pytest.MonkeyPatch):
     from dotenv import dotenv_values
 
-    from helpdesk_agent.config import LLMConfig
+    from helpdesk_agent.config.settings import LLMConfig
 
     file_key = dotenv_values(Path(__file__).resolve().parents[1] / ".env").get("HELPDESK_AGENT_LLM_API_KEY")
     key = _LIVE_LLM_API_KEY if _LIVE_LLM_API_KEY is not None else file_key
@@ -78,7 +78,7 @@ def live_llm_config(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture(autouse=True)
 def _reset_dependency_caches():
     """Clear lru_cached dependencies so env/config changes are picked up."""
-    from helpdesk_agent import dependencies
+    import helpdesk_agent.api.dependencies as dependencies
 
     dependencies.get_mcp_config.cache_clear()
     dependencies.get_mcp_adapter.cache_clear()
@@ -96,8 +96,8 @@ def _reset_dependency_caches():
 @pytest.fixture
 def mock_llm_client():
     """Create a mock LLM client for testing."""
-    from helpdesk_agent.modules.triage.llm import LLMTriageClient
-    from helpdesk_agent.modules.triage.schema import TriageResult
+    from helpdesk_agent.domain.models.triage import TriageResult
+    from helpdesk_agent.infrastructure.llm.client import LLMTriageClient
 
     client = MagicMock(spec=LLMTriageClient)
     client.triage_email = AsyncMock(
@@ -120,6 +120,6 @@ def mock_llm_client():
 @pytest.fixture
 def mock_workflow(mock_llm_client):
     """Create a workflow with mocked LLM client."""
-    from helpdesk_agent.core.workflow import HelpdeskWorkflow
+    from helpdesk_agent.api.factory import HelpdeskWorkflow
 
     return HelpdeskWorkflow(mcp_adapter=None, llm_client=mock_llm_client)

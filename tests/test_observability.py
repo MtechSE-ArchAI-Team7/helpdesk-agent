@@ -11,10 +11,10 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind, StatusCode
 
-from helpdesk_agent import observability
-from helpdesk_agent.config import LLMConfig
-from helpdesk_agent.core.workflow import HelpdeskWorkflow
-from helpdesk_agent.modules.triage.llm import LLMError, LLMTriageClient
+from helpdesk_agent.api.factory import HelpdeskWorkflow
+from helpdesk_agent.config.settings import LLMConfig
+from helpdesk_agent.infrastructure.llm.client import LLMError, LLMTriageClient
+from helpdesk_agent.observability import tracing as observability
 
 pytestmark = pytest.mark.unit
 
@@ -156,7 +156,7 @@ async def test_invalid_llm_json_marks_generation_failed(spans):
 
 @pytest.mark.asyncio
 async def test_workflow_step_spans_share_trace_and_session(spans, mock_llm_client):
-    from helpdesk_agent.modules.a2a.diagnosis import current_trace_id
+    from helpdesk_agent.application.diagnosis import current_trace_id
 
     workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
     with observability.get_tracer().start_as_current_span("request") as request:
@@ -235,9 +235,9 @@ def test_real_langfuse_sdk_exports_native_generation_without_network(monkeypatch
 
 
 def test_lifespan_flushes_on_shutdown():
-    from helpdesk_agent.main import _lifespan
+    from helpdesk_agent.api.app import _lifespan
 
-    with patch("helpdesk_agent.main.flush_observability") as flush:
+    with patch("helpdesk_agent.api.app.flush_observability") as flush:
         with TestClient(FastAPI(lifespan=_lifespan)):
             flush.assert_not_called()
         flush.assert_called_once()

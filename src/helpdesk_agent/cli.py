@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from .core.workflow import HelpdeskWorkflow
+from helpdesk_agent.api.factory import HelpdeskWorkflow
 
 
 def main() -> None:

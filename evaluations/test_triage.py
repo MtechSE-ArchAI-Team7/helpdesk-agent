@@ -2,369 +2,38 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections import Counter
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated, Literal
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from deepeval.evaluate import assert_test
-from deepeval.metrics import BaseMetric
 from deepeval.test_case import LLMTestCase
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from helpdesk_agent.config import LLMConfig, TriageConfig
-from helpdesk_agent.core.workflow import CLARIFICATION_COMMENT_MARKER, GraphState, HelpdeskWorkflow
-from helpdesk_agent.models import WorkflowState
-from helpdesk_agent.modules.playwright import PlaywrightAssessment, PlaywrightEvaluation, PlaywrightValidationFlow
-from helpdesk_agent.modules.triage.guardrails import get_guardrails_validator
-from helpdesk_agent.modules.triage.llm import LLMError, LLMTriageClient
-from helpdesk_agent.modules.triage.schema import TriageLLMResponse, TriageResult
-
-DATASET_DIR = Path(__file__).parent
-SUITES = ("testing", "evaluation")
-Service = Literal["jira", "slack", "email", "identity", "platform", "prometheus", "unknown"]
-IssueType = Literal["access", "incident", "performance", "deployment", "general"]
-Priority = Literal["critical", "high", "medium", "low"]
-Area = Literal["security", "incident_types", "ambiguity", "user_roles", "routing", "priority", "classification"]
-AREA_COUNTS = {
-    "security": 12,
-    "incident_types": 8,
-    "ambiguity": 8,
-    "user_roles": 8,
-    "routing": 8,
-    "priority": 8,
-    "classification": 8,
-}
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class Labels(StrictModel):
-    service: Service
-    issue_type: IssueType
-    priority: Priority
-
-
-class TextCheck(StrictModel):
-    field: Literal["summary", "clarifying_questions", "missing_info", "reason", "expected_error"]
-    pattern: str = Field(min_length=1)
-    present: bool = True
-
-    @model_validator(mode="after")
-    def validate_pattern(self) -> TextCheck:
-        try:
-            re.compile(self.pattern, re.IGNORECASE)
-        except re.error as exc:
-            raise ValueError(f"Invalid text-check pattern: {exc}") from exc
-        return self
-
-
-class RoutingFixture(StrictModel):
-    clarification_rounds: int = Field(default=0, ge=0)
-    max_clarification_rounds: int = Field(default=2, ge=0)
-    confidence_threshold: float = Field(default=0.6, ge=0, le=1)
-    faq_relevance_threshold: float = Field(default=0.7, ge=0, le=1)
-    faq_score: float | None = Field(default=None, ge=0, le=1)
-    faq_status: Literal["success", "failed"] = "success"
-    browser_assessment: PlaywrightAssessment | None = None
-
-
-class TriageExpected(StrictModel):
-    service: Service | None = None
-    issue_type: IssueType | None = None
-    priority: Priority | None = None
-    route: Literal["clarify", "diagnose", "playwright", "resolve_faq"] | None = None
-
-    @model_validator(mode="after")
-    def validate_expectations(self) -> TriageExpected:
-        if not any(value is not None for value in self.model_dump().values()):
-            raise ValueError("At least one triage expectation is required")
-        if any(getattr(self, field) is None for field in self.model_fields_set):
-            raise ValueError("Omit unconstrained triage fields instead of setting them to null")
-        return self
-
-
-class AssessmentExpected(StrictModel):
-    decision: Literal["eligible", "needs_info", "not_applicable"]
-    target_url: str | None = None
-
-    @model_validator(mode="after")
-    def validate_target(self) -> AssessmentExpected:
-        if self.decision == "eligible" and not self.target_url:
-            raise ValueError("Eligible assessment expectations must have a nonempty target URL")
-        return self
-
-
-class EvidenceExpected(StrictModel):
-    status: Literal["reproduced", "not_reproduced", "inconclusive"]
-
-
-class CaseBase(StrictModel):
-    id: str = Field(min_length=1)
-    area: Area | None = None
-    checks: list[TextCheck] = Field(default_factory=list)
-
-
-class TriageCase(CaseBase):
-    operation: Literal["triage"] = "triage"
-    subject: str = Field(min_length=1)
-    body: str = Field(min_length=1)
-    history_snippets: list[str] = Field(default_factory=list)
-    routing: RoutingFixture | None = None
-    expected: TriageExpected
-
-    @model_validator(mode="after")
-    def validate_routing(self) -> TriageCase:
-        if (self.expected.route is not None) != (self.routing is not None):
-            raise ValueError("A routing fixture and expected route must be supplied together")
-        return self
-
-
-class AssessmentCase(CaseBase):
-    operation: Literal["browser_assessment"]
-    subject: str = Field(min_length=1)
-    body: str = Field(min_length=1)
-    triage_summary: str = Field(min_length=1)
-    expected: AssessmentExpected
-
-
-class EvidenceCase(CaseBase):
-    operation: Literal["browser_evidence"]
-    expected_error: str = Field(min_length=1)
-    evidence: str = Field(min_length=1)
-    expected: EvidenceExpected
-
-
-EvaluationCase = Annotated[TriageCase | AssessmentCase | EvidenceCase, Field(discriminator="operation")]
-
-
-class Dataset(StrictModel):
-    extends: Literal["testing"] | None = None
-    cases: list[EvaluationCase] = Field(min_length=1)
-
-
-def load_cases(path: Path) -> list[TriageCase | AssessmentCase | EvidenceCase]:
-    dataset = Dataset.model_validate_json(path.read_text(encoding="utf-8"))
-    cases = list(dataset.cases)
-    if dataset.extends:
-        if path.name != "triage_evaluation.json":
-            raise ValueError("Only the evaluation dataset can extend the testing dataset")
-        cases = load_cases(path.with_name("triage_testing.json")) + cases
-    if len({case.id for case in cases}) != len(cases):
-        raise ValueError("Evaluation case IDs must be unique")
-    for case in cases:
-        if case.area is None:
-            raise ValueError(f"Case {case.id}: an evaluation area is required")
-        fields = {
-            "triage": {"summary", "clarifying_questions", "missing_info"},
-            "browser_assessment": {"reason", "expected_error", "clarifying_questions", "missing_info"},
-            "browser_evidence": {"summary"},
-        }[case.operation]
-        if any(check.field not in fields for check in case.checks):
-            raise ValueError(f"Case {case.id}: text check targets a field absent from {case.operation}")
-    return cases
-
-
-def select_cases(suite: str) -> list[TriageCase | AssessmentCase | EvidenceCase]:
-    if suite not in SUITES:
-        raise ValueError(f"Unknown evaluation suite {suite!r}; choose testing or evaluation")
-    return load_cases(DATASET_DIR / f"triage_{suite}.json")
-
-
-class TriageLabelMetric(BaseMetric):  # type: ignore[no-untyped-call]
-    def __init__(self) -> None:
-        self.threshold = 1.0
-        self.async_mode = False
-        self.strict_mode = True
-        self.error = None
-        self.score = 0.0
-        self.success = False
-
-    def measure(self, test_case: LLMTestCase, **kwargs: object) -> float:
-        self.error = None
-        self.success = False
-        self.score = 0.0
-        try:
-            if test_case.actual_output is None:
-                raise ValueError("Actual output is required")
-            actual = json.loads(test_case.actual_output)
-            expected = Labels.model_validate_json(test_case.expected_output or "{}").model_dump()
-            if not isinstance(actual, dict):
-                raise ValueError("Actual labels must be a JSON object")
-            mismatches = [field for field, value in expected.items() if actual.get(field) != value]
-            self.score = (len(expected) - len(mismatches)) / len(expected)
-            self.success = self.score >= self.threshold
-            self.reason = "All labels matched" if not mismatches else f"Mismatched labels: {', '.join(mismatches)}"
-            return self.score
-        except (ValueError, TypeError) as exc:
-            self.error = str(exc)
-            raise
-
-    async def a_measure(self, test_case: LLMTestCase, **kwargs: object) -> float:
-        return self.measure(test_case)
-
-    def is_successful(self) -> bool:
-        return self.error is None and self.success is True
-
-    @property
-    def __name__(self) -> str:
-        return "Triage Label Accuracy"
-
-
-class HelpdeskBehaviorMetric(TriageLabelMetric):  # type: ignore[no-untyped-call]
-    def __init__(self, case: TriageCase | AssessmentCase | EvidenceCase) -> None:
-        super().__init__()
-        self.case = case
-
-    def measure(self, test_case: LLMTestCase, **kwargs: object) -> float:
-        self.error = None
-        self.success = False
-        self.score = 0.0
-        try:
-            if test_case.actual_output is None:
-                raise ValueError("Actual output is required")
-            actual = json.loads(test_case.actual_output)
-            if not isinstance(actual, dict):
-                raise ValueError("Actual output must be a JSON object")
-            if isinstance(self.case, TriageCase):
-                TriageLLMResponse.model_validate(actual)
-            elif isinstance(self.case, AssessmentCase):
-                PlaywrightAssessment.model_validate(actual)
-            else:
-                PlaywrightEvaluation.model_validate(actual)
-            expected = self.case.expected.model_dump(exclude_unset=True)
-            failures = [
-                f"{field}: expected {value!r}, got {actual.get(field)!r}"
-                for field, value in expected.items()
-                if actual.get(field) != value
-            ]
-            if (
-                isinstance(self.case, TriageCase)
-                and self.case.routing is not None
-                and actual.get("route") != self.case.expected.route
-            ):
-                routing = self.case.routing
-                failures.append(
-                    "routing diagnostics: "
-                    + json.dumps(
-                        {
-                            "confidence": actual.get("confidence"),
-                            "confidence_threshold": routing.confidence_threshold,
-                            "missing_info": actual.get("missing_info"),
-                            "clarifying_questions": actual.get("clarifying_questions"),
-                            "browser_decision": (
-                                routing.browser_assessment.decision if routing.browser_assessment else None
-                            ),
-                            "clarification_rounds": routing.clarification_rounds,
-                            "max_clarification_rounds": routing.max_clarification_rounds,
-                        },
-                        ensure_ascii=True,
-                        sort_keys=True,
-                    )
-                )
-            for check in self.case.checks:
-                value = actual.get(check.field)
-                if not isinstance(value, (str, list)):
-                    raise ValueError(f"Missing text-check field: {check.field}")
-                text = "\n".join(value) if isinstance(value, list) else value
-                matched = re.search(check.pattern, text, re.IGNORECASE) is not None
-                if matched != check.present:
-                    failures.append(
-                        f"{check.field}: pattern {check.pattern!r} must be {'present' if check.present else 'absent'}"
-                    )
-            # Inspect generated fields only: raw_text intentionally retains the original report.
-            generated = "\n".join(
-                str(actual.get(field, "")) for field in ("summary", "reason", "expected_error", "clarifying_questions")
-            )
-            if re.search(
-                r"(?<!not )(?<!never )(?<!don't )(?<!avoid )"
-                r"\b(?:send|share|provide|give|enter)\s+(?:me\s+|us\s+)?(?:your\s+|the\s+)?"
-                r"(?:password|access token|api key)\b|\bwhat is your password\b",
-                generated,
-                re.IGNORECASE,
-            ):
-                failures.append("Generated output requests a secret")
-            if isinstance(self.case, AssessmentCase):
-                report = f"{self.case.subject}\n\n{self.case.body}"
-                target = actual.get("target_url")
-                if (target is not None or actual.get("decision") == "eligible") and (
-                    target not in PlaywrightValidationFlow.reported_urls(report)
-                ):
-                    failures.append("Target URL was not explicitly supplied in the report")
-                if actual.get("decision") == "eligible" and not str(actual.get("expected_error", "")).strip():
-                    failures.append("Eligible assessment has no expected error")
-            self.score = 0.0 if failures else 1.0
-            self.success = not failures
-            self.reason = "; ".join(failures) if failures else "All expected behaviors matched"
-            return self.score
-        except (ValueError, TypeError) as exc:
-            self.error = str(exc)
-            raise
-
-    @property
-    def __name__(self) -> str:
-        return "Helpdesk Critical Behavior"
-
-
-def evaluate_route(client: LLMTriageClient, case: TriageCase, result: TriageResult) -> str:
-    fixture = case.routing
-    if fixture is None:
-        raise ValueError("Routing evaluation requires a fixture")
-    workflow = HelpdeskWorkflow(
-        llm_client=client,
-        triage_config=TriageConfig(
-            confidence_threshold=fixture.confidence_threshold,
-            faq_relevance_threshold=fixture.faq_relevance_threshold,
-            max_clarification_rounds=fixture.max_clarification_rounds,
-        ),
-    )
-    state: GraphState = {
-        "workflow_state": WorkflowState(case_id=case.id, summary=result.summary),
-        "initial_input": {"subject": case.subject, "body": case.body},
-        "triage_result": result,
-        "ticket_id": "HELP-1",
-        "existing_ticket": {"comments": [CLARIFICATION_COMMENT_MARKER] * fixture.clarification_rounds},
-        "faq_results": {
-            "status": fixture.faq_status,
-            "results": [] if fixture.faq_score is None else [{"score": fixture.faq_score}],
-        },
-        "playwright_assessment": fixture.browser_assessment,
-        "playwright_validation": None,
-    }
-    route = workflow._should_clarify(state)
-    return workflow._should_resolve_faq(state) if route == "faq_gate" else route
-
-
-async def run_case(
-    client: LLMTriageClient,
-    case: TriageCase | AssessmentCase | EvidenceCase,
-) -> dict[str, object]:
-    if isinstance(case, TriageCase):
-        result = await client.triage_email(case.subject, case.body, history_snippets=case.history_snippets)
-        actual = result.model_dump()
-        if case.routing:
-            actual["route"] = evaluate_route(client, case, result)
-        return actual
-    if isinstance(case, AssessmentCase):
-        assessment = await client.assess_playwright_validation(case.subject, case.body, case.triage_summary)
-        return assessment.model_dump()
-    evaluation = await client.evaluate_playwright_validation(case.expected_error, case.evidence)
-    return evaluation.model_dump()
-
+from evaluations.support.datasets import load_cases, select_cases
+from evaluations.support.metrics import HelpdeskBehaviorMetric, TriageLabelMetric, assert_evaluation
+from evaluations.support.runner import evaluate_route, run_case
+from evaluations.support.schemas import (
+    AREA_COUNTS,
+    AssessmentCase,
+    AssessmentExpected,
+    EvidenceCase,
+    Labels,
+    RoutingFixture,
+    TextCheck,
+    TriageCase,
+    TriageExpected,
+)
+from helpdesk_agent.config.settings import LLMConfig
+from helpdesk_agent.domain.models.browser import PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.infrastructure.llm.client import LLMError, LLMTriageClient
+from helpdesk_agent.reasoning.guardrails import get_guardrails_validator
 
 SUITE = os.environ.get("HELPDESK_AGENT_EVAL_SUITE", "testing")
 CASES = select_cases(SUITE)
 LABELS = Labels(service="identity", issue_type="access", priority="medium")
-
-
-def assert_evaluation(test_case: LLMTestCase, metric: BaseMetric) -> None:
-    metrics: list[BaseMetric] = [metric]
-    assert_test(test_case, metrics, run_async=False)
 
 
 @pytest.mark.functional

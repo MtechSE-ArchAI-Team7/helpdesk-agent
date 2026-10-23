@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
-from helpdesk_agent.config import LangfuseConfig, LLMConfig, MCPConfig, TriageConfig
+from helpdesk_agent.config.settings import LangfuseConfig, LLMConfig, MCPConfig, TriageConfig
 
 
 class TestLangfuseConfig(unittest.TestCase):

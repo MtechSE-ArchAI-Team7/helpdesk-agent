@@ -2,14 +2,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from helpdesk_agent.config import MCPConfig, TriageConfig
-from helpdesk_agent.core.workflow import HelpdeskWorkflow, _record_gate_decision
-from helpdesk_agent.models import WorkflowState
-from helpdesk_agent.modules.a2a.client import DeliveryOutcome
-from helpdesk_agent.modules.memory import MemoryError
-from helpdesk_agent.modules.playwright import PlaywrightAssessment, PlaywrightEvaluation
-from helpdesk_agent.modules.triage.llm import LLMError
-from helpdesk_agent.modules.triage.schema import TriageResult
+from helpdesk_agent.api.factory import HelpdeskWorkflow
+from helpdesk_agent.config.settings import MCPConfig, TriageConfig
+from helpdesk_agent.domain.models.browser import BrowserSettings, PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.domain.models.workflow import WorkflowState
+from helpdesk_agent.infrastructure.a2a.client import DeliveryOutcome
+from helpdesk_agent.infrastructure.llm.client import LLMError
+from helpdesk_agent.infrastructure.memory.agentcore import MemoryError
+from helpdesk_agent.observability.events import _record_gate_decision
 
 pytestmark = pytest.mark.unit
 
@@ -74,6 +75,8 @@ def workflow():
 
 
 def browser_enabled(flow):
+    flow.mcp_enabled = True
+    flow.browser_settings = BrowserSettings(True, ("portal.example.com",))
     flow.mcp_adapter = MagicMock()
     flow.playwright_flow.config = MCPConfig(
         playwright_url="https://browser.example.com/mcp", playwright_allowed_hosts=["portal.example.com"]
@@ -196,6 +199,7 @@ async def test_clarification_delivery_and_comments(workflow, sent, ticket):
 @pytest.mark.parametrize("skip", ["runtime", "allowlist"])
 async def test_browser_assessment_requires_runtime_and_allowlist(workflow, skip):
     workflow.mcp_adapter = MagicMock()
+    workflow.mcp_enabled = True
     workflow.playwright_flow.config = MCPConfig(
         playwright_url="https://browser.example.com" if skip == "allowlist" else None,
     )
@@ -333,7 +337,7 @@ async def test_triage_failure_propagates_and_records_failed_events(workflow):
 @pytest.mark.asyncio
 async def test_memory_history_failure_does_not_skip_other_memory_operations(workflow):
     workflow.memory = MagicMock()
-    workflow.memory.config.context_chars = 1000
+    workflow.memory.context_chars = 1000
     workflow.memory.history = AsyncMock(side_effect=MemoryError("History unavailable"))
     workflow.memory.similar = AsyncMock(side_effect=MemoryError("Search unavailable"))
     workflow.memory.save_message = AsyncMock(side_effect=MemoryError("Write unavailable"))

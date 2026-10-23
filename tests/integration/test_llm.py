@@ -5,8 +5,8 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from helpdesk_agent.config import LLMConfig
-from helpdesk_agent.modules.triage.llm import LLMTriageClient
+from helpdesk_agent.config.settings import LLMConfig
+from helpdesk_agent.infrastructure.llm.client import LLMTriageClient
 
 pytestmark = [pytest.mark.integration, pytest.mark.live_llm, pytest.mark.asyncio]
 

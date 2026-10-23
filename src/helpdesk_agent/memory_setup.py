@@ -9,7 +9,7 @@ import time
 import boto3
 from botocore.config import Config
 
-from .modules.memory import FACTS_NAMESPACE, SUMMARY_NAMESPACE
+from helpdesk_agent.infrastructure.memory.agentcore import FACTS_NAMESPACE, SUMMARY_NAMESPACE
 
 
 def main() -> None:

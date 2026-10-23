@@ -5,11 +5,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from helpdesk_agent.config import LLMConfig
-from helpdesk_agent.modules.playwright import PlaywrightAssessment, PlaywrightEvaluation
-from helpdesk_agent.modules.triage.guardrails import GuardrailsRejected, GuardrailsValidator
-from helpdesk_agent.modules.triage.llm import LLMError, LLMTriageClient
-from helpdesk_agent.modules.triage.schema import TriageLLMResponse
+from helpdesk_agent.config.settings import LLMConfig
+from helpdesk_agent.domain.models.browser import PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.triage import TriageLLMResponse
+from helpdesk_agent.infrastructure.llm.client import LLMError, LLMTriageClient
+from helpdesk_agent.reasoning.guardrails import GuardrailsRejected, GuardrailsValidator
 
 pytestmark = pytest.mark.unit
 

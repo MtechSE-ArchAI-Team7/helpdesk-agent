@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-from helpdesk_agent.config import MCPConfig
-from helpdesk_agent.mcp import MCPResponse
-from helpdesk_agent.modules.email.schema import EmailWebhook, _strip_html
-from helpdesk_agent.modules.email.service import ZohoMailFlow
+from helpdesk_agent.api.schemas.email import EmailWebhook, _strip_html
+from helpdesk_agent.config.settings import MCPConfig
+from helpdesk_agent.infrastructure.mcp.email import ZohoMailFlow
+from helpdesk_agent.infrastructure.mcp.transport import MCPResponse
 
 pytestmark = pytest.mark.unit
 
