@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections import Counter
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated, Literal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,6 +28,16 @@ SUITES = ("testing", "evaluation")
 Service = Literal["jira", "slack", "email", "identity", "platform", "prometheus", "unknown"]
 IssueType = Literal["access", "incident", "performance", "deployment", "general"]
 Priority = Literal["critical", "high", "medium", "low"]
+Area = Literal["security", "incident_types", "ambiguity", "user_roles", "routing", "priority", "classification"]
+AREA_COUNTS = {
+    "security": 12,
+    "incident_types": 8,
+    "ambiguity": 8,
+    "user_roles": 8,
+    "routing": 8,
+    "priority": 8,
+    "classification": 8,
+}
 
 
 class StrictModel(BaseModel):
@@ -94,6 +106,7 @@ class EvidenceExpected(StrictModel):
 
 class CaseBase(StrictModel):
     id: str = Field(min_length=1)
+    area: Area | None = None
     checks: list[TextCheck] = Field(default_factory=list)
 
 
@@ -145,6 +158,8 @@ def load_cases(path: Path) -> list[TriageCase | AssessmentCase | EvidenceCase]:
     if len({case.id for case in cases}) != len(cases):
         raise ValueError("Evaluation case IDs must be unique")
     for case in cases:
+        if case.area is None:
+            raise ValueError(f"Case {case.id}: an evaluation area is required")
         fields = {
             "triage": {"summary", "clarifying_questions", "missing_info"},
             "browser_assessment": {"reason", "expected_error", "clarifying_questions", "missing_info"},
@@ -344,7 +359,7 @@ async def run_case(
 
 SUITE = os.environ.get("HELPDESK_AGENT_EVAL_SUITE", "testing")
 CASES = select_cases(SUITE)
-LABELS = Labels(service="jira", issue_type="access", priority="medium")
+LABELS = Labels(service="identity", issue_type="access", priority="medium")
 
 
 def assert_evaluation(test_case: LLMTestCase, metric: BaseMetric) -> None:
@@ -359,11 +374,13 @@ async def test_live_triage(case: TriageCase | AssessmentCase | EvidenceCase) -> 
     config = LLMConfig.from_env()
     if not config.api_key or config.api_key == "test-api-key":
         pytest.fail("Live evaluation requires HELPDESK_AGENT_LLM_API_KEY, not a dummy test key")
+    started = perf_counter()
     client = LLMTriageClient(config)
     try:
         actual = await run_case(client, case)
     finally:
         await client.client.close()
+    execution_duration_seconds = perf_counter() - started
     assert_evaluation(
         LLMTestCase(
             input=case.model_dump_json(exclude={"expected", "checks"}),
@@ -374,7 +391,9 @@ async def test_live_triage(case: TriageCase | AssessmentCase | EvidenceCase) -> 
                 "suite": SUITE,
                 "case_id": case.id,
                 "operation": case.operation,
+                "area": case.area,
                 "model": config.model,
+                "execution_duration_seconds": execution_duration_seconds,
             },
         ),
         HelpdeskBehaviorMetric(case),
@@ -385,8 +404,8 @@ async def test_live_triage(case: TriageCase | AssessmentCase | EvidenceCase) -> 
 @pytest.mark.parametrize(
     "actual,score",
     [
-        ({"service": "jira", "issue_type": "access", "priority": "medium"}, 1.0),
-        ({"service": "jira", "issue_type": "access", "priority": "low"}, 2 / 3),
+        ({"service": "identity", "issue_type": "access", "priority": "medium"}, 1.0),
+        ({"service": "identity", "issue_type": "access", "priority": "low"}, 2 / 3),
         ({}, 0.0),
     ],
 )
@@ -455,7 +474,28 @@ def test_suite_inheritance_and_coverage() -> None:
     for cases in (testing, evaluation):
         assert {case.operation for case in cases} == {"triage", "browser_assessment", "browser_evidence"}
         assert any(isinstance(case, TriageCase) and case.routing for case in cases)
-    assert len([case for case in evaluation if case.id.startswith("baseline-")]) == 12
+    assert Counter(case.area for case in evaluation) == AREA_COUNTS
+    assert all(case.area is not None for case in testing)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("area", [None, "unsupported"])
+def test_dataset_requires_known_area(tmp_path: Path, area: str | None) -> None:
+    row = select_cases("testing")[0].model_dump()
+    row["area"] = area
+    path = tmp_path / "cases.json"
+    path.write_text(json.dumps({"cases": [row]}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_cases(path)
+
+
+@pytest.mark.unit
+def test_all_scenarios_reference_ecommerce_demo() -> None:
+    for case in select_cases("evaluation"):
+        text = case.evidence if isinstance(case, EvidenceCase) else f"{case.subject}\n{case.body}"
+        assert "Buggy E-Commerce Demo" in text, case.id
+        if isinstance(case, TriageCase) and case.expected.service is not None:
+            assert case.expected.service in {"platform", "identity"}, case.id
 
 
 @pytest.mark.unit
@@ -513,7 +553,7 @@ def sample_triage(**overrides: object) -> TriageResult:
         {
             **LABELS.model_dump(),
             "confidence": 0.9,
-            "summary": "One Jira account is locked.",
+            "summary": "One Buggy E-Commerce Demo customer cannot sign in.",
             **overrides,
         }
     )
@@ -532,7 +572,7 @@ def sample_triage(**overrides: object) -> TriageResult:
     ],
 )
 def test_behavior_metric_labels_and_secret_requests(changes: dict[str, object], success: bool) -> None:
-    case = select_cases("testing")[0]
+    case = select_cases("testing")[0].model_copy(update={"expected": TriageExpected(**LABELS.model_dump())})
     metric = HelpdeskBehaviorMetric(case)
     actual = sample_triage(**changes).model_dump_json()
     assert metric.measure(LLMTestCase(input="offline", actual_output=actual)) == float(success)
@@ -568,9 +608,9 @@ def test_behavior_metric_text_checks(summary: str, success: bool) -> None:
 @pytest.mark.parametrize(
     "url,error,success",
     [
-        ("https://status.example.com/health", "Service unavailable", True),
+        ("https://shop.example.test/", "Blank product catalog", True),
         ("https://invented.example.com/health", "Service unavailable", False),
-        ("https://status.example.com/health", "", False),
+        ("https://shop.example.test/", "", False),
     ],
 )
 def test_assessment_metric_checks_url_and_error(url: str, error: str, success: bool) -> None:
@@ -602,7 +642,7 @@ def test_behavior_metric_rejects_invalid_output(actual: str) -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_behavior_metric_async_parity_and_deepeval_assertion() -> None:
-    case = select_cases("testing")[0]
+    case = select_cases("testing")[0].model_copy(update={"expected": TriageExpected(**LABELS.model_dump())})
     test_case = LLMTestCase(input="offline", actual_output=sample_triage().model_dump_json())
     metric = HelpdeskBehaviorMetric(case)
     assert await metric.a_measure(test_case) == metric.measure(test_case) == 1.0

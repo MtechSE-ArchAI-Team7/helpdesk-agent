@@ -114,8 +114,51 @@ Live DeepEval evaluations use two synthetic datasets:
   pipeline selects this suite explicitly; it is also the local default.
 - [Evaluation](evaluations/triage_evaluation.json): inherits all testing
   cases and adds 42 cases, for 60 total. Run less frequently (nightly/weekly or
-  before major model/prompt changes). The original 12 explicitly labelled smoke
-  cases are preserved here with `baseline-` IDs. No schedule is enabled automatically.
+  before major model/prompt changes). The full suite is organized into seven
+  explicit areas; no schedule is enabled automatically.
+
+| Evaluation area | Cases | Coverage |
+| --- | ---: | --- |
+| Security | 12 | Untrusted report/history/page directives, history isolation, sensitive data, and unsafe browser actions |
+| Incident types | 8 | Outages versus access, latency, deployment, and general questions |
+| Ambiguity | 8 | Missing details, follow-up/history context, and incomplete or misleading browser evidence |
+| User roles | 8 | Employee, manager, administrator, customer, executive, and intern contexts; roles do not grant tool authorization or automatically boost priority |
+| Routing | 8 | FAQ threshold boundaries, failed/no FAQ results, clarification caps, and browser-routing decisions |
+| Priority | 8 | Low/medium/high/critical based on impact rather than urgent wording |
+| Classification | 8 | Service/issue labels and browser feasibility/evidence categories |
+| **Total** | **60** | Each case has one primary area, even where behaviors overlap |
+
+The quick suite remains 18 cases and the full suite inherits it plus 42 cases.
+All scenarios are synthetic support reports about
+[Buggy E-Commerce Demo](https://github.com/worldzofai/buggy-ecommerce-demo),
+grounded in its login, product loading, cart, checkout, discount, inventory,
+customer-data, and review functionality. Existing service labels are preserved:
+shop features use `platform`, authentication reports use `identity`, and vague
+reports need not impose a service label. Incident types remain `access`,
+`incident`, `performance`, `deployment`, and `general`; e-commerce features are
+scenario context, not new production labels.
+
+Concrete reports identify the storefront or Node/Express backend, distinguish
+authentication failures from application defects, and describe expected versus
+observed behavior, affected users, workarounds, and business impact where known.
+Deliberately ambiguous reports retain missing details to exercise clarification.
+Paired FAQ-threshold cases use identical request text so only the routing fixture
+changes.
+
+The referenced backend has discount/inventory/customer-data endpoints, while the
+frontend calls `/products` and `/checkout`. Reports describe observed symptoms,
+not proof that each endpoint works. Browser observations are supplied synthetic
+fixtures, including healthy-instance counterexamples; they are not captured
+results from this repository. `http://localhost:3000/` is the demo's documented
+local address, not a target these evaluations contact. The browser-eligible
+catalog case assumes an authorized HTTPS reverse proxy at the fictional
+`https://shop.example.test/` address. No demo deployment,
+purchase, deletion, private-data access, or vulnerability probing is performed.
+
+Case `area` is recorded in DeepEval metadata; offline tests enforce exact full-suite
+area counts. Security cases evaluate model behavior on synthetic inputs, not
+exploitable-vulnerability coverage or actual authorization enforcement. Role claims
+are report context only; no real user identity or permission checks are performed.
 
 Every functional case calls the configured live LLM through production prompts
 and guardrails. Set `HELPDESK_AGENT_EVAL_SUITE` to `testing` or `evaluation`;
@@ -161,9 +204,15 @@ To produce a standalone local HTML report from a saved DeepEval JSON run:
 uv run python scripts/render_eval_report.py reports/functional/test_run_<timestamp>.json reports/functional/testing.html
 ```
 
-The HTML includes pass/fail counts, a test overview table with scores, durations,
+The HTML includes pass/fail counts, a category summary above the filters with
+test counts, passes, failures, and pass rates for the entire run, and a test
+overview table with categories, durations,
 reasons and links to details, expandable inputs and outputs, and status/operation
-filters applying to both views. It loads no external resources. Treat
+and category filters applying to both views. Per-case durations include live LLM
+requests, routing checks where applicable, and client cleanup; total run duration
+also includes assertions and test-run overhead. Older JSON runs without execution
+timing display "Not recorded" rather than DeepEval's assertion-only duration.
+Metric scores remain available in the case details. It loads no external resources. Treat
 reports as potentially sensitive: they include model inputs and outputs.
 
 ## Architecture
