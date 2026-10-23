@@ -184,6 +184,39 @@ def test_mcp_atlassian_translation_defaults_and_generic_fallback() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("priority", "jira_name"),
+    [
+        ("highest", "Highest"),
+        ("high", "High"),
+        ("medium", "Medium"),
+        ("low", "Low"),
+        ("lowest", "Lowest"),
+        ("critical", "Highest"),
+        (" Highest ", "Highest"),
+        ("urgent", "Urgent"),
+    ],
+)
+async def test_ticket_creation_and_update_serialize_priority(monkeypatch, priority, jira_name):
+    from helpdesk_agent.infrastructure.mcp.ticketing import JiraTicketFlow
+
+    calls = _patch_mcp_session(monkeypatch, _result(text='{"key":"HD-1"}'))
+    adapter = MCPProxyAdapter(MCPConfig(atlassian_url="http://jira/mcp", jira_project_key="HD"))
+    flow = JiraTicketFlow(adapter)
+    created = await flow.create_ticket("case", "Support", "Report", "platform", priority, "requester")
+    assert created["status"] == "created"
+    assert calls[-1][1] == "jira_create_issue"
+    assert json.loads(calls[-1][2]["additional_fields"]) == {"priority": {"name": jira_name}}
+    updated = await flow.update_ticket("HD-1", priority=priority)
+    assert updated["status"] == "updated"
+    assert calls[-1] == (
+        "call",
+        "jira_update_issue",
+        {"issue_key": "HD-1", "fields": json.dumps({"priority": jira_name})},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("url", "region", "expected_region"),
     [
         ("https://gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp", None, "ap-southeast-2"),

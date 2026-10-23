@@ -14,7 +14,7 @@
       "operation": "triage",
       "subject": "Buggy E-Commerce Demo cannot accept any orders",
       "body": "Our deployed Buggy E-Commerce Demo is the store's e-commerce web platform, with a storefront and Node/Express backend. Starting today, every customer can browse products and sign in but clicking Checkout fails instead of submitting the order. Support has confirmed the same failure across multiple accounts and browsers. No orders are accepted, all sales have stopped, and there is no workaround. The whole storefront's ordering function is unavailable right now; this is not one customer's authentication problem or merely slow loading.",
-      "expected": {"service": "platform", "issue_type": "incident", "priority": "critical"},
+      "expected": {"service": "platform", "issue_type": "incident", "priority": "highest"},
       "checks": [{"field": "summary", "pattern": "checkout|order|sales"}]
     },
     {
@@ -62,7 +62,7 @@
       "subject": "Buggy E-Commerce Demo shopping cart help",
       "body": "I am asking about normal use of the Buggy E-Commerce Demo e-commerce web platform's storefront cart. Please reply here with the standard steps for adding a product to the cart and removing it before checkout. Products load, cart buttons work, and nothing is broken. This is a documentation question with no deadline or business impact. Plain-text steps in this reply are sufficient; no attachment, account-specific action, or purchase is requested.",
       "routing": {"faq_score": 0.7},
-      "expected": {"issue_type": "general", "priority": "low", "route": "resolve_faq"}
+      "expected": {"issue_type": "general", "priority": "lowest", "route": "resolve_faq"}
     },
     {
       "id": "shop-faq-below-threshold-diagnoses",
@@ -71,7 +71,7 @@
       "subject": "Buggy E-Commerce Demo shopping cart help",
       "body": "I am asking about normal use of the Buggy E-Commerce Demo e-commerce web platform's storefront cart. Please reply here with the standard steps for adding a product to the cart and removing it before checkout. Products load, cart buttons work, and nothing is broken. This is a documentation question with no deadline or business impact. Plain-text steps in this reply are sufficient; no attachment, account-specific action, or purchase is requested.",
       "routing": {"faq_score": 0.69},
-      "expected": {"issue_type": "general", "priority": "low", "route": "diagnose"}
+      "expected": {"issue_type": "general", "priority": "lowest", "route": "diagnose"}
     },
     {
       "id": "shop-clarification-cap-diagnoses",

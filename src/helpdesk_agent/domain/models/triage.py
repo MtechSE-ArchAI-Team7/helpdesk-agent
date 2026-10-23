@@ -4,13 +4,15 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from helpdesk_agent.domain.policies.priority import Priority
+
 
 class TriageLLMResponse(BaseModel):
     """Constrained response contract for the triage model."""
 
     service: Literal["jira", "slack", "email", "identity", "platform", "prometheus", "unknown"]
     issue_type: Literal["access", "incident", "performance", "deployment", "general"]
-    priority: Literal["critical", "high", "medium", "low"]
+    priority: Priority
     confidence: float = Field(..., ge=0.0, le=1.0)
     missing_info: list[str] = Field(default_factory=list)
     clarifying_questions: list[str] = Field(default_factory=list)
@@ -62,7 +64,7 @@ class TriageResult(BaseModel):
 
     service: str = Field(..., description="Detected service (e.g., jira, slack, email, identity)")
     issue_type: str = Field(..., description="Issue type (e.g., access, incident, performance, general)")
-    priority: str = Field(..., description="Priority level (critical, high, medium, low)")
+    priority: str = Field(..., description="Priority level (highest, high, medium, low, lowest)")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score 0-1")
     missing_info: list[str] = Field(default_factory=list, description="Information still needed")
     clarifying_questions: list[str] = Field(default_factory=list, description="Questions to ask user")

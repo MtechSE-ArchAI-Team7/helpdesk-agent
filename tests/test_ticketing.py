@@ -6,10 +6,12 @@ from helpdesk_agent.mock_mcp_server import MockMCPServer
 
 
 def test_to_jira_priority_mapping() -> None:
+    assert to_jira_priority("highest") == "Highest"
     assert to_jira_priority("critical") == "Highest"
     assert to_jira_priority("high") == "High"
     assert to_jira_priority("medium") == "Medium"
     assert to_jira_priority("low") == "Low"
+    assert to_jira_priority("lowest") == "Lowest"
     assert to_jira_priority(" High ") == "High"
     # Unknown values pass through title-cased (custom priority schemes)
     assert to_jira_priority("urgent") == "Urgent"
@@ -48,7 +50,7 @@ async def test_create_ticket_mock_mode() -> None:
         "Service outage detected",
         "The service is down in production.",
         "platform",
-        "critical",
+        "highest",
         "bob@example.com",
     )
     assert result["status"] == "mocked"

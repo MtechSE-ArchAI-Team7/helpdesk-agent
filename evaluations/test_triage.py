@@ -36,6 +36,18 @@ CASES = select_cases(SUITE)
 LABELS = Labels(service="identity", issue_type="access", priority="medium")
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("priority", ["highest", "high", "medium", "low", "lowest"])
+def test_evaluation_labels_accept_five_level_priority_policy(priority: str) -> None:
+    from helpdesk_agent.domain.models.triage import TriageLLMResponse
+
+    labels = Labels.model_validate({**LABELS.model_dump(), "priority": priority})
+    result = TriageLLMResponse.model_validate(
+        {**labels.model_dump(), "confidence": 0.9, "summary": "Reported support issue"}
+    )
+    assert result.priority == labels.priority == priority
+
+
 @pytest.mark.functional
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.id)

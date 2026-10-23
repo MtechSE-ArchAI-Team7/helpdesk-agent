@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.prompts.triage.priority import PRIORITY_INSTRUCTIONS
 
 SYSTEM = (
     "Review a structured helpdesk triage classification against the current user's report. "
@@ -15,7 +16,11 @@ SYSTEM = (
     "For revise, include a complete revised_triage using the original classification schema; omit separate "
     "missing_info and clarifying_questions. For uncertain, omit revised_triage and supply nonempty missing_info "
     "and clarifying_questions. The controller applies clarification limits and routing; you cannot authorize tools. "
-    "Preserve uncertainty and ask only for information needed to classify or resolve the current report."
+    "Preserve uncertainty and ask only for information needed to classify or resolve the current report. "
+    "Check whether irrelevant requester attributes or persuasive wording influenced priority. Revise only "
+    "when report evidence supports a policy correction. If material priority facts are insufficient, return "
+    "uncertain with the required missing_info and clarifying_questions; the controller preserves the initial "
+    "classification and confidence. Do not invent a revision to conceal uncertainty.\n\n" + PRIORITY_INSTRUCTIONS
 )
 
 

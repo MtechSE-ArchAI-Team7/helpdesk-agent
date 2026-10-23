@@ -6,14 +6,12 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from helpdesk_agent.domain.models.browser import PlaywrightAssessment
+from helpdesk_agent.domain.policies.priority import Priority
 
 Service = Literal["jira", "slack", "email", "identity", "platform", "prometheus", "unknown"]
 
 
 IssueType = Literal["access", "incident", "performance", "deployment", "general"]
-
-
-Priority = Literal["critical", "high", "medium", "low"]
 
 
 Area = Literal["security", "incident_types", "ambiguity", "user_roles", "routing", "priority", "classification"]

@@ -4,25 +4,9 @@ from typing import Any
 
 from helpdesk_agent.config.settings import MCPConfig
 from helpdesk_agent.domain.policies.tickets import extract_ticket_id
+from helpdesk_agent.infrastructure.mcp.priorities import _JIRA_PRIORITY_MAP as _JIRA_PRIORITY_MAP
+from helpdesk_agent.infrastructure.mcp.priorities import to_jira_priority as to_jira_priority
 from helpdesk_agent.infrastructure.mcp.transport import MCPProxyAdapter, MCPResponse
-
-# Triage priorities -> Jira priority names (Jira standard set).
-_JIRA_PRIORITY_MAP = {
-    "critical": "Highest",
-    "high": "High",
-    "medium": "Medium",
-    "low": "Low",
-    "lowest": "Lowest",
-}
-
-
-def to_jira_priority(priority: str) -> str:
-    """Map a triage priority value to a Jira priority name.
-
-    Unknown values are title-cased and passed through (custom Jira priority
-    schemes may define them).
-    """
-    return _JIRA_PRIORITY_MAP.get(priority.strip().lower(), priority.strip().title())
 
 
 class JiraTicketFlow:

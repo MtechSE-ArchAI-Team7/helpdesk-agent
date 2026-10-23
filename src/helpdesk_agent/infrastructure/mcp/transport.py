@@ -20,6 +20,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from helpdesk_agent.config.settings import MCPConfig
+from helpdesk_agent.infrastructure.mcp.priorities import to_jira_priority
 
 logger = logging.getLogger(__name__)
 
@@ -219,12 +220,17 @@ class MCPProxyAdapter:
             reporter = arguments.get("reporter")
             if reporter:
                 description = f"{description}\n\nReporter: {reporter}"
-            return f"{prefix}jira_create_issue", {
+            create_arguments = {
                 "project_key": self.config.jira_project_key,
                 "summary": arguments.get("summary", "Helpdesk request"),
                 "issue_type": "Task",
                 "description": description,
             }
+            if arguments.get("priority") is not None:
+                create_arguments["additional_fields"] = json.dumps(
+                    {"priority": {"name": to_jira_priority(arguments["priority"])}}
+                )
+            return f"{prefix}jira_create_issue", create_arguments
         if tool_name == "jira.get_issue":
             return f"{prefix}jira_get_issue", {
                 "issue_key": arguments.get("issue_key", ""),

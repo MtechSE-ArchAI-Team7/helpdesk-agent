@@ -42,4 +42,4 @@ async def test_external_llm(live_llm_config: LLMConfig) -> None:
     assert 0 <= result.confidence <= 1
     assert result.service in {"jira", "slack", "email", "identity", "platform", "prometheus", "unknown"}
     assert result.issue_type in {"access", "incident", "performance", "deployment", "general"}
-    assert result.priority in {"critical", "high", "medium", "low"}
+    assert result.priority in {"highest", "high", "medium", "low", "lowest"}

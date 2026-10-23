@@ -124,7 +124,7 @@ Live DeepEval evaluations use two synthetic datasets:
 | Ambiguity | 8 | Missing details, follow-up/history context, and incomplete or misleading browser evidence |
 | User roles | 8 | Employee, manager, administrator, customer, executive, and intern contexts; roles do not grant tool authorization or automatically boost priority |
 | Routing | 8 | FAQ threshold boundaries, failed/no FAQ results, clarification caps, and browser-routing decisions |
-| Priority | 8 | Low/medium/high/critical based on impact rather than urgent wording |
+| Priority | 8 | Five-level impact policy, workaround availability, and resistance to urgent wording |
 | Classification | 8 | Service/issue labels and browser feasibility/evidence categories |
 | **Total** | **60** | Each case has one primary area, even where behaviors overlap |
 
@@ -191,10 +191,17 @@ Offline `-m unit` checks validate both datasets, inheritance, dispatch, scoring,
 and routing without contacting a model.
 
 These are initial synthetic regression baselines, not production-quality
-certification. Priority labels need human review against your operational
-impact/urgency policy; the production prompt does not define a full priority
-rubric. Extend with reviewed, de-identified examples and calibrate before making
-scores release gates. The pipeline remains advisory as described above.
+certification. Priority labels need human review against the shared five-level
+policy below. The revised datasets use `highest` instead of `critical` and
+`lowest` for informational requests without business impact. A currently blocked
+team-wide release without a workaround now expects `highest`; production impact
+is not a prerequisite in this policy. The data-exposure case retains incident
+classification checks but leaves priority unconstrained: this business-blocking
+rubric does not define a separate security-severity override. Case IDs remain
+stable, including historical names containing `critical` or `low`.
+Dataset sizes/category counts remain unchanged. Historical scores do not measure
+the revised policy. Extend with reviewed, de-identified examples and calibrate
+before making scores release gates. The pipeline remains advisory as described above.
 The eval dependency group is excluded from the production image; live runs incur
 model costs.
 
@@ -215,6 +222,52 @@ timing display "Not recorded" rather than DeepEval's assertion-only duration.
 Metric scores remain available in the case details. It loads no external resources. Treat
 reports as potentially sensitive: they include model inputs and outputs.
 
+## Priority policy and fairness
+
+Initial triage and Reflection share the same version-controlled domain rubric
+and trusted system instructions:
+
+| Value | Jira priority | Criteria |
+| --- | --- | --- |
+| `highest` | Highest | Blocking business progress now: a major service or business process is unavailable or severely impaired, with no effective workaround |
+| `high` | High | Could block progress: a significant service or business function is seriously impaired, or likely to become blocking soon |
+| `medium` | Medium | Potential to affect progress: meaningful but contained impact, or a workaround exists while the issue is addressed |
+| `low` | Low | Minor or easily worked around, with limited impact and no immediate risk of blocking progress |
+| `lowest` | Lowest | Trivial, little or no business impact; typically informational or cosmetic |
+
+Priority must reflect demonstrated technical/business impact, urgency, and
+effective workarounds, not job title, seniority, department, identity, perceived
+influence, writing style, language proficiency, emotional intensity, or an
+unsupported urgency claim. Equivalent facts should receive equivalent treatment.
+Actual business consequences remain relevant; requester status does not establish
+those consequences or authorization. Historical cases and embedded priority
+requests cannot override the policy.
+
+If material impact, urgency, or workaround facts are missing, triage must identify
+the missing facts and ask actionable questions while assigning only an
+evidence-supported provisional priority. This does not add a new priority label
+or output field. Reflection uses `uncertain` when material facts are insufficient,
+preserving the initial classification/confidence and merging clarification
+details. Existing clarification gates and the configurable round limit remain
+authoritative, including the eligible-browser exception at the limit.
+
+**Contract change:** newly generated classifications and Reflection revisions use
+only `highest`, `high`, `medium`, `low`, and `lowest`; `critical` is no longer valid
+model output. Jira create/update translation accepts `critical` as a legacy alias
+for `Highest`, and retains custom Jira-name passthrough. Historical triage state
+remains readable; it is not automatically rewritten. Consumers of classification
+and A2A payloads must support the new labels; remote schema compatibility requires
+separate verification. The configured Jira project must expose the corresponding
+five priority names. Ticket creation uses its existing pre-triage default and
+the subsequent update applies the reviewed classification.
+
+The rubric guides model assessment; it is not a deterministic priority calculator
+or an independent factual verifier. Offline tests verify schemas, prompt wiring,
+controlled Reflection behavior, and Jira serialization, not real-model fairness.
+Paired-scenario and repeated live evaluations are still needed to measure bias
+and consistency. No role-based SLA or security-severity override is implemented
+by this rubric.
+
 ## Architecture
 
 The agent is a modular monolith: one deployable application on Amazon Bedrock
@@ -227,7 +280,7 @@ src/helpdesk_agent/
 ├── api/                    # App factory, dependency wiring, routes, inbound A2A/Lambda
 ├── domain/
 │   ├── models/             # Case, triage, browser, and conversation contracts
-│   └── policies/           # Clarification, FAQ relevance, ticket IDs, browser targets
+│   └── policies/           # Priority rubric, clarification, FAQ relevance, ticket IDs, browser targets
 ├── application/            # Chat, communication, diagnosis, and memory coordination
 ├── workflows/
 │   ├── nodes/              # Ticket, triage, communication, and diagnosis nodes

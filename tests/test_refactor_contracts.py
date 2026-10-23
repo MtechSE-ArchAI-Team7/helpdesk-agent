@@ -33,7 +33,7 @@ pytestmark = pytest.mark.unit
                 "clarifying_questions": [],
                 "summary": "Test summary",
             },
-            "b75c56928fa3b551719e3ed535568ba0c51782c8bdbb17bdeb47eba0e106fde3",
+            "05d0d2d2d031efbe0c5f79a0cac36f5bfbe897882a425a500a56cf7a91b45d99",
         ),
         (
             "assess_playwright_validation",
@@ -56,7 +56,7 @@ pytestmark = pytest.mark.unit
         ),
     ],
 )
-async def test_prompt_messages_match_pre_refactor_fingerprints(method, args, response, fingerprint) -> None:
+async def test_prompt_messages_match_recorded_fingerprints(method, args, response, fingerprint) -> None:
     client = LLMTriageClient(LLMConfig(api_key="placeholder"))
     client._complete_json = AsyncMock(return_value=response)
     try:
