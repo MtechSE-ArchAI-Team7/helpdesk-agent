@@ -51,7 +51,13 @@ def _should_clarify(self: WorkflowContext, state: GraphState) -> str:
 
     threshold = self.triage_config.confidence_threshold
     assessment = state.get("playwright_assessment")
-    clarification_needed = needs_clarification(triage_result, assessment, threshold)
+    reflection = state["workflow_state"].metadata.get("triage_reflection", {})
+    clarification_needed = needs_clarification(
+        triage_result,
+        assessment,
+        threshold,
+        reflection_uncertain=reflection.get("status") == "completed" and reflection.get("outcome") == "uncertain",
+    )
     if not clarification_needed:
         if assessment and assessment.decision == "eligible":
             _record_gate_decision(

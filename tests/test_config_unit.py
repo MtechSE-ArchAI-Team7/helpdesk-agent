@@ -68,11 +68,8 @@ async def test_transport_sends_task_specific_model_to_provider():
                 "Body",
             ),
             {
-                "service": "identity",
-                "issue_type": "access",
-                "priority": "high",
-                "confidence": 0.9,
-                "summary": "Reviewed login",
+                "outcome": "accept",
+                "assessment_summary": "Classification matches the report",
             },
         ),
         (

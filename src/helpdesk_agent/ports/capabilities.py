@@ -9,7 +9,7 @@ from helpdesk_agent.domain.models.browser import (
     PlaywrightAssessment,
     PlaywrightEvaluation,
 )
-from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.domain.models.triage import TriageReflection, TriageResult
 
 
 class ChatMessage(TypedDict):
@@ -35,7 +35,7 @@ class ReasoningPort(Protocol):
         history_snippets: list[str] | None = None,
     ) -> TriageResult: ...
 
-    async def reflect_triage(self, result: TriageResult, subject: str, body: str) -> TriageResult: ...
+    async def reflect_triage(self, result: TriageResult, subject: str, body: str) -> TriageReflection: ...
 
     async def plan_browser(self, target_url: str, expected_error: str, summary: str) -> BrowserPlan: ...
 

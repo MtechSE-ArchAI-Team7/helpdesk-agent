@@ -4,6 +4,7 @@ import logging
 
 from helpdesk_agent.application.context import bounded_snippets
 from helpdesk_agent.domain.exceptions import LLMError, MemoryError
+from helpdesk_agent.domain.policies.triage import apply_triage_reflection
 from helpdesk_agent.observability.workflow import _trace_step
 from helpdesk_agent.workflows.context import WorkflowContext
 from helpdesk_agent.workflows.state import GraphState
@@ -86,6 +87,7 @@ async def _triage_node(self: WorkflowContext, state: GraphState) -> GraphState:
         try:
             reflected_result = await self.llm_client.reflect_triage(triage_result, subject, body)
         except LLMError as exc:
+            workflow_state.metadata["triage_reflection"] = {"status": "failed", "error_type": type(exc).__name__}
             workflow_state.record_history(
                 "triage_reflection", "failed", f"Initial triage retained ({type(exc).__name__})"
             )
@@ -95,9 +97,13 @@ async def _triage_node(self: WorkflowContext, state: GraphState) -> GraphState:
                 type(exc).__name__,
             )
         else:
-            triage_result = reflected_result
+            triage_result = apply_triage_reflection(triage_result, reflected_result)
+            workflow_state.metadata["triage_reflection"] = {
+                "status": "completed",
+                **reflected_result.model_dump(mode="json"),
+            }
             workflow_state.record_history(
-                "triage_reflection", "completed", "Reviewed initial classification against current report"
+                "triage_reflection", "completed", f"Reflection outcome: {reflected_result.outcome}"
             )
             logger.info("case=%s stage=triage_reflection status=completed", case_id)
         state["triage_result"] = triage_result

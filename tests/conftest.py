@@ -97,7 +97,7 @@ def _reset_dependency_caches():
 def mock_llm_client():
     """Create a mock LLM client for testing."""
     from helpdesk_agent.domain.models.browser import BrowserPlan, BrowserReactAction
-    from helpdesk_agent.domain.models.triage import TriageResult
+    from helpdesk_agent.domain.models.triage import TriageReflection, TriageResult
     from helpdesk_agent.infrastructure.llm.client import LLMTriageClient
 
     client = MagicMock(spec=LLMTriageClient)
@@ -114,7 +114,9 @@ def mock_llm_client():
         raw_text="Subject: Password reset\n\nBody: I need to reset my password",
     )
     client.triage_email = AsyncMock(return_value=result)
-    client.reflect_triage = AsyncMock(side_effect=lambda current, _subject, _body: current)
+    client.reflect_triage = AsyncMock(
+        return_value=TriageReflection(outcome="accept", assessment_summary="Supported by the report")
+    )
     client.plan_browser = AsyncMock(
         return_value=BrowserPlan(
             objective="Inspect the reported page",

@@ -11,7 +11,7 @@ from helpdesk_agent.domain.models.browser import (
     PlaywrightAssessment,
     PlaywrightEvaluation,
 )
-from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.domain.models.triage import TriageReflection, TriageResult
 from helpdesk_agent.domain.models.workflow import WorkflowState
 from helpdesk_agent.infrastructure.a2a.client import DeliveryOutcome
 from helpdesk_agent.infrastructure.llm.client import LLMError
@@ -63,7 +63,9 @@ def graph_state(**overrides):
 def workflow():
     llm = MagicMock()
     llm.triage_email = AsyncMock(return_value=triage())
-    llm.reflect_triage = AsyncMock(side_effect=lambda result, _subject, _body: result)
+    llm.reflect_triage = AsyncMock(
+        return_value=TriageReflection(outcome="accept", assessment_summary="Supported by the report")
+    )
     llm.plan_browser = AsyncMock(
         return_value=BrowserPlan(
             objective="Inspect the page", inspection_order=["browser_snapshot", "browser_console_messages"]
@@ -333,6 +335,43 @@ async def test_triage_reflection_failure_retains_initial_result(workflow):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rounds,eligible,expected",
+    [
+        (0, False, "clarify"),
+        (0, True, "clarify"),
+        (2, False, "diagnose"),
+        (2, True, "playwright"),
+    ],
+)
+async def test_uncertain_reflection_uses_existing_clarification_limits(workflow, rounds, eligible, expected):
+    state = graph_state(existing_ticket={"comments": [{"body": "Pending clarifications"}] * rounds})
+    workflow.llm_client.reflect_triage.return_value = TriageReflection(
+        outcome="uncertain",
+        assessment_summary="Impact is not specified",
+        missing_info=["affected users"],
+        clarifying_questions=["Who is affected?"],
+    )
+    await workflow._triage_node(state)
+    if eligible:
+        state["playwright_assessment"] = PlaywrightAssessment(
+            decision="eligible", reason="Allowed", target_url="https://portal.example.com/login"
+        )
+    assert workflow._should_clarify(state) == expected
+    assert state["triage_result"].confidence == 0.9
+    assert state["workflow_state"].metadata["triage_reflection"]["outcome"] == "uncertain"
+    workflow.llm_client.reflect_triage.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_uncertain_reflection_with_zero_clarification_limit_requires_diagnosis(workflow):
+    workflow.triage_config = TriageConfig(max_clarification_rounds=0)
+    state = graph_state()
+    state["workflow_state"].metadata["triage_reflection"] = {"status": "completed", "outcome": "uncertain"}
+    assert workflow._should_clarify(state) == "diagnose"
+
+
+@pytest.mark.asyncio
 async def test_email_generation_failure_uses_deterministic_fallback(workflow):
     state = graph_state()
     workflow.llm_client.draft_clarification.side_effect = LLMError("Email model unavailable")
@@ -461,6 +500,7 @@ async def test_triage_failure_propagates_and_records_failed_events(workflow):
     assert state["workflow_state"].events[-1]["status"] == "FAILED"
     with pytest.raises(LLMError):
         await workflow.run({"summary": "Login"})
+    workflow.llm_client.reflect_triage.assert_not_awaited()
 
 
 @pytest.mark.asyncio

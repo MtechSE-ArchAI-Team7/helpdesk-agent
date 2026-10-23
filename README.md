@@ -282,9 +282,22 @@ modules re-export or delegate to one canonical implementation; private
 monkeypatch targets should use canonical modules. Configuration and observability
 are now packages, with their public exports retained.
 
-Reflection reviews the initial triage result; the workflow's deterministic
-clarification and routing gates remain authoritative. A reflection failure is
-recorded and leaves the initial triage unchanged. Browser feasibility
+One Reflection review is attempted after each successful initial triage;
+the workflow's deterministic clarification and routing gates remain authoritative.
+The Sol reflection model returns a validated outcome and concise structured
+critique, not private chain-of-thought:
+
+| Outcome | Effect |
+| --- | --- |
+| `accept` | Preserve the initial triage exactly |
+| `revise` | Apply a complete validated classification; preserve source, sender, and original report |
+| `uncertain` | Preserve classification and confidence, merge missing information/questions, and request clarification through existing gates |
+
+Uncertainty respects the configured clarification limit (two rounds by default),
+including the existing eligible-browser exception when that limit is reached.
+Reflection inference or validation failure is recorded separately, not as an
+accepted outcome, and leaves initial triage unchanged. There is no reflection
+self-correction loop. Browser feasibility
 assessment still runs **before** clarification routing so it can request
 missing details. Eligible checks use the
 [compiled browser subgraph](src/helpdesk_agent/workflows/browser/graph.py) to
@@ -299,6 +312,46 @@ Generation failures use deterministic templates; chat responses and ticket
 comments remain unchanged. These additional reasoning calls can increase
 latency and model usage, especially for browser-eligible cases. Task-specific
 models and their defaults are documented below and in `.env.example`.
+
+The internal `reflect_triage` method now returns a typed `TriageReflection`
+assessment rather than `TriageResult`; callers apply it through the shared
+domain policy. Existing client import paths are retained. The structured
+assessment is exposed through `metadata.triage_reflection` without adding
+top-level response fields. Ordinary workflow logs record status/outcome, not
+the full critique or original report.
+
+Illustrative reflection outputs (not live execution evidence):
+
+```json
+{"outcome":"accept","assessment_summary":"Classification is supported by the report.","findings":[]}
+```
+
+```json
+{
+  "outcome": "revise",
+  "assessment_summary": "Only one account is affected; organization-wide impact is unsupported.",
+  "findings": ["The report describes a single locked account."],
+  "revised_triage": {
+    "service": "identity",
+    "issue_type": "access",
+    "priority": "medium",
+    "confidence": 0.9,
+    "summary": "One user cannot sign in because their account is locked.",
+    "missing_info": [],
+    "clarifying_questions": []
+  }
+}
+```
+
+```json
+{
+  "outcome": "uncertain",
+  "assessment_summary": "The report does not establish the scope of impact.",
+  "findings": ["The number of affected users is unspecified."],
+  "missing_info": ["affected users"],
+  "clarifying_questions": ["Is the issue limited to your account?"]
+}
+```
 
 Live evaluations intentionally remain outside `tests/` to avoid its dummy
 credential fixtures. Their existing entrypoint is

@@ -12,7 +12,7 @@ from helpdesk_agent.domain.models.browser import (
     PlaywrightAssessment,
     PlaywrightEvaluation,
 )
-from helpdesk_agent.domain.models.triage import EmailDraft, TriageLLMResponse, TriageResult
+from helpdesk_agent.domain.models.triage import EmailDraft, TriageLLMResponse, TriageReflection, TriageResult
 from helpdesk_agent.ports.capabilities import ChatMessage, LLMPort
 from helpdesk_agent.prompts.browser.assessment import SYSTEM as ASSESSMENT_SYSTEM
 from helpdesk_agent.prompts.browser.assessment import render as render_assess_playwright_validation
@@ -179,7 +179,7 @@ class HelpdeskReasoner:
         except Exception as exc:
             raise LLMError(f"Playwright evidence evaluation failed: {exc}") from exc
 
-    async def reflect_triage(self, result: TriageResult, subject: str, body: str) -> TriageResult:
+    async def reflect_triage(self, result: TriageResult, subject: str, body: str) -> TriageReflection:
         prompt = render_triage_reflection(result, subject, body)
         try:
             await self.guardrails.validate_input({"subject": subject, "body": body, "triage": result.model_dump_json()})
@@ -187,11 +187,10 @@ class HelpdeskReasoner:
                 "llm.reflect_triage",
                 messages=[{"role": "system", "content": REFLECTION_SYSTEM}, {"role": "user", "content": prompt}],
                 empty_message="LLM returned empty triage reflection",
-                output_model=TriageLLMResponse,
+                output_model=TriageReflection,
                 task="reflection",
             )
-            revised = TriageLLMResponse.model_validate(data)
-            return result.model_copy(update=revised.model_dump())
+            return TriageReflection.model_validate(data)
         except Exception as exc:
             raise LLMError(f"Triage reflection failed: {exc}") from exc
 

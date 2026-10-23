@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from helpdesk_agent.domain.models.browser import PlaywrightAssessment
-from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.domain.models.triage import TriageReflection, TriageResult
 
 CLARIFICATION_COMMENT_MARKER = "pending clarifications"
 DIAGNOSIS_AGENT_NAME = "diagnosis-agent"
@@ -20,12 +20,30 @@ def needs_clarification(
     triage: TriageResult,
     assessment: PlaywrightAssessment | None,
     confidence_threshold: float,
+    *,
+    reflection_uncertain: bool = False,
 ) -> bool:
     return (
-        triage.confidence < confidence_threshold
+        reflection_uncertain
+        or triage.confidence < confidence_threshold
         or bool(triage.missing_info)
         or bool(assessment and assessment.decision == "needs_info")
     )
+
+
+def apply_triage_reflection(initial: TriageResult, reflection: TriageReflection) -> TriageResult:
+    if reflection.outcome == "revise" and reflection.revised_triage is not None:
+        return initial.model_copy(update=reflection.revised_triage.model_dump())
+    if reflection.outcome == "uncertain":
+        return initial.model_copy(
+            update={
+                "missing_info": list(dict.fromkeys([*initial.missing_info, *reflection.missing_info])),
+                "clarifying_questions": list(
+                    dict.fromkeys([*initial.clarifying_questions, *reflection.clarifying_questions])
+                ),
+            }
+        )
+    return initial
 
 
 def relevant_faq(result: dict[str, Any], relevance_threshold: float) -> bool:

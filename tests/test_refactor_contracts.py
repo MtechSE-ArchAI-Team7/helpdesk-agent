@@ -106,8 +106,11 @@ async def test_compiled_browser_subgraph_is_used_on_eligible_parent_route() -> N
     )
     client.triage_email = AsyncMock(return_value=triage)
     from helpdesk_agent.domain.models.browser import BrowserPlan, BrowserReactAction
+    from helpdesk_agent.domain.models.triage import TriageReflection
 
-    client.reflect_triage = AsyncMock(side_effect=lambda result, _subject, _body: result)
+    client.reflect_triage = AsyncMock(
+        return_value=TriageReflection(outcome="accept", assessment_summary="Supported by the report")
+    )
     client.plan_browser = AsyncMock(
         return_value=BrowserPlan(objective="Inspect the login page", inspection_order=["browser_snapshot"])
     )

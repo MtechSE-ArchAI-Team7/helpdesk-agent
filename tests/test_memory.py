@@ -13,7 +13,7 @@ from helpdesk_agent.api.factory import HelpdeskWorkflow
 from helpdesk_agent.application.chat import handle_chat_message
 from helpdesk_agent.application.diagnosis import build_case_input
 from helpdesk_agent.config.settings import MemoryConfig
-from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.domain.models.triage import TriageReflection, TriageResult
 from helpdesk_agent.infrastructure.memory.agentcore import AgentCoreMemory, MemoryError, redact_shared_text
 from helpdesk_agent.infrastructure.persistence.conversations import ConversationStore
 
@@ -284,7 +284,9 @@ def workflow(memory, *, confidence=0.9):
             raw_text="Login failure",
         )
     )
-    llm.reflect_triage = AsyncMock(side_effect=lambda result, _subject, _body: result)
+    llm.reflect_triage = AsyncMock(
+        return_value=TriageReflection(outcome="accept", assessment_summary="Supported by the report")
+    )
     llm.draft_clarification = AsyncMock(return_value="Which browser?")
     result = HelpdeskWorkflow(llm_client=llm, memory=memory)
     result.ticket_flow.create_ticket = AsyncMock(return_value={"status": "created", "ticket_id": "HELP-1"})
