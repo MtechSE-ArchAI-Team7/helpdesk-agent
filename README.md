@@ -307,7 +307,7 @@ src/helpdesk_agent/
 ├── config/                 # Environment settings and validation
 ├── observability/          # OpenTelemetry/Langfuse setup and workflow events
 ├── main.py                 # Stable deployment/CLI entrypoint
-└── core/, modules/, ...     # Thin compatibility exports for previous imports
+└── py.typed
 ```
 
 | Package | Responsibility |
@@ -330,16 +330,14 @@ ports, not HTTP request models or the concrete LangGraph workflow. Reasoning
 consumes the LLM port; only the infrastructure adapter knows the OpenAI SDK.
 Workflows receive composed capabilities instead of constructing clients.
 [Architecture tests](tests/architecture/test_boundaries.py) enforce these import
-directions and prevent canonical modules from importing legacy facades.
+directions across the canonical package layers.
 
 The [composition factory](src/helpdesk_agent/api/factory.py) retains the previous
 optional-client `HelpdeskWorkflow` constructor; the
 [canonical workflow](src/helpdesk_agent/workflows/workflow.py) accepts explicit
-capabilities. Existing import paths, HTTP/A2A schemas, environment settings, CLI
-commands, and Docker/Vercel/Lambda entrypoints remain supported. Compatibility
-modules re-export or delegate to one canonical implementation; private
-monkeypatch targets should use canonical modules. Configuration and observability
-are now packages, with their public exports retained.
+capabilities. HTTP/A2A schemas, environment settings, CLI commands, and
+Docker/Vercel/Lambda entrypoints remain supported. Tests and application code
+import implementations directly from their canonical packages.
 
 One Reflection review is attempted after each successful initial triage;
 the workflow's deterministic clarification and routing gates remain authoritative.
@@ -788,7 +786,7 @@ Current deployment:
 | Region | `ap-southeast-1` |
 | Token | Secrets Manager `aios/diagnosis-agent/agent-auth-token` (account `734849394833`) — inject as `HELPDESK_AGENT_A2A_REMOTE_AGENT_TOKENS`; never commit |
 
-Case payloads are built by `src/helpdesk_agent/modules/a2a/diagnosis.py`
+Case payloads are built by `src/helpdesk_agent/application/diagnosis.py`
 (`build_case_input`) and carry the full `CaseInput` contract (`requester`,
 `classification`, `affected_services`, `time_window`); the current OTEL trace
 id rides along as `trace_id` for cross-agent tracing. Note: do NOT use agent

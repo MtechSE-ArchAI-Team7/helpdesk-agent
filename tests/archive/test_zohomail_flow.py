@@ -1,8 +1,8 @@
 import pytest
 
-from helpdesk_agent.mcp import MCPProxyAdapter
+from helpdesk_agent.infrastructure.mcp.email import ZohoMailFlow
+from helpdesk_agent.infrastructure.mcp.transport import MCPProxyAdapter
 from helpdesk_agent.mock_mcp_server import MockMCPServer
-from helpdesk_agent.modules.email.service import ZohoMailFlow
 
 
 @pytest.fixture(scope="module")

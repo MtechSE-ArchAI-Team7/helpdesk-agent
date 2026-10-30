@@ -1,4 +1,4 @@
-"""Compatibility exports; implementations live in the canonical package."""
+"""Public observability APIs."""
 
 from helpdesk_agent.observability.tracing import _configured as _configured
 from helpdesk_agent.observability.tracing import _langfuse_client as _langfuse_client

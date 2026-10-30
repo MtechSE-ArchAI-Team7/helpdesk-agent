@@ -9,6 +9,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from helpdesk_agent.main import create_app  # noqa: E402
+from helpdesk_agent.api.app import create_app  # noqa: E402
 
 app = create_app()

@@ -7,10 +7,10 @@ from fastapi.testclient import TestClient
 class TestChatEndpoint(unittest.TestCase):
     def setUp(self) -> None:
         # Mock the LLM client to avoid requiring API key
-        self.mock_patcher = patch("helpdesk_agent.dependencies.get_llm_client")
+        self.mock_patcher = patch("helpdesk_agent.api.dependencies.get_llm_client")
         mock_get_llm = self.mock_patcher.start()
 
-        from helpdesk_agent.modules.triage.schema import TriageResult
+        from helpdesk_agent.domain.models.triage import TriageResult
 
         mock_llm = MagicMock()
         mock_llm.triage_email = AsyncMock(
@@ -29,7 +29,7 @@ class TestChatEndpoint(unittest.TestCase):
         )
         mock_get_llm.return_value = mock_llm
 
-        from helpdesk_agent.main import create_app
+        from helpdesk_agent.api.app import create_app
 
         self.app = create_app()
         self.client = TestClient(self.app)

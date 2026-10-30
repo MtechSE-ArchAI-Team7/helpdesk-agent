@@ -1,4 +1,4 @@
-"""Compatibility exports; implementations live in the canonical package."""
+"""Public configuration types."""
 
 from helpdesk_agent.config.settings import A2AConfig as A2AConfig
 from helpdesk_agent.config.settings import LangfuseConfig as LangfuseConfig

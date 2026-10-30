@@ -8,7 +8,7 @@ import pytest
 from botocore.credentials import Credentials
 
 from helpdesk_agent.config import MCPConfig
-from helpdesk_agent.mcp import GatewayIAMAuth, MCPProxyAdapter
+from helpdesk_agent.infrastructure.mcp.transport import GatewayIAMAuth, MCPProxyAdapter
 from helpdesk_agent.mock_mcp_server import MockMCPServer
 
 
@@ -33,7 +33,14 @@ async def test_call_tool(mock_server) -> None:
 @pytest.mark.asyncio
 async def test_async_tool_uses_pending_status(mock_server) -> None:
     adapter = MCPProxyAdapter()
-    response = await adapter.call_tool("zohomail.ZohoMail_sendEmail", {"path_variables": {"accountId": "a1"}, "body": {"fromAddress": "h@d.c", "toAddress": "a@b.c", "subject": "s", "content": "b"}}, wait_for_completion=False)
+    response = await adapter.call_tool(
+        "zohomail.ZohoMail_sendEmail",
+        {
+            "path_variables": {"accountId": "a1"},
+            "body": {"fromAddress": "h@d.c", "toAddress": "a@b.c", "subject": "s", "content": "b"},
+        },
+        wait_for_completion=False,
+    )
     assert response.status == "queued"
     assert response.action_id
 
@@ -139,7 +146,7 @@ async def test_iam_auth_signs_each_method_with_temporary_credentials() -> None:
 
 @pytest.mark.asyncio
 async def test_playwright_sequence_uses_one_session_and_direct_arguments(monkeypatch, caplog) -> None:
-    caplog.set_level(logging.INFO, logger="helpdesk_agent.mcp")
+    caplog.set_level(logging.INFO, logger="helpdesk_agent.infrastructure.mcp.transport")
     calls = []
     events = []
     sessions = {"initialized": 0}
@@ -173,11 +180,9 @@ async def test_playwright_sequence_uses_one_session_and_direct_arguments(monkeyp
                 structuredContent={},
             )
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_streamablehttp_client)
-    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
-    adapter = MCPProxyAdapter(
-        MCPConfig(playwright_url="http://playwright:5/mcp", playwright_tool_prefix="")
-    )
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", fake_streamablehttp_client)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.ClientSession", lambda *_: FakeSession())
+    adapter = MCPProxyAdapter(MCPConfig(playwright_url="http://playwright:5/mcp", playwright_tool_prefix=""))
 
     responses = await adapter.call_tool_sequence(
         [
@@ -227,8 +232,8 @@ async def test_playwright_sequence_logs_nested_error_and_failing_tool(monkeypatc
         async def call_tool(self, tool_name, arguments):
             raise NestedError("MCP sequence failed")
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", fake_streamablehttp_client)
-    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: FakeSession())
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", fake_streamablehttp_client)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.ClientSession", lambda *_: FakeSession())
     adapter = MCPProxyAdapter(MCPConfig(playwright_url="http://playwright:5/mcp"))
 
     responses = await adapter.call_tool_sequence(

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 
 def _triage_result(confidence, questions=None, missing_info=None):
-    from helpdesk_agent.modules.triage.schema import TriageResult
+    from helpdesk_agent.domain.models.triage import TriageResult
 
     return TriageResult(
         service="identity",
@@ -47,7 +47,7 @@ def _send_message_payload(text, context_id=None, task_id=None, request_id="req-1
 class TestA2AInterface(unittest.TestCase):
     def setUp(self) -> None:
         # Mock the LLM client to avoid requiring an API key
-        self.mock_patcher = patch("helpdesk_agent.dependencies.get_llm_client")
+        self.mock_patcher = patch("helpdesk_agent.api.dependencies.get_llm_client")
         mock_get_llm = self.mock_patcher.start()
 
         self.mock_llm = MagicMock()
@@ -55,7 +55,7 @@ class TestA2AInterface(unittest.TestCase):
         self.mock_llm.draft_clarification = AsyncMock(return_value="Please provide more details.")
         mock_get_llm.return_value = self.mock_llm
 
-        from helpdesk_agent.main import create_app
+        from helpdesk_agent.api.app import create_app
 
         self.app = create_app()
         self.client = TestClient(self.app)
@@ -156,7 +156,7 @@ class TestA2AConfig(unittest.TestCase):
 class TestA2AClientManager(unittest.TestCase):
     def test_unknown_agent_raises_key_error(self) -> None:
         from helpdesk_agent.config import A2AConfig
-        from helpdesk_agent.modules.a2a.client import A2AClientManager
+        from helpdesk_agent.infrastructure.a2a.client import A2AClientManager
 
         manager = A2AClientManager(A2AConfig(remote_agents={"jira-bot": "http://localhost:9999"}))
         self.assertEqual(manager.agent_names, ["jira-bot"])
@@ -324,7 +324,7 @@ def _fake_boto_client(captured, response=None):
 class TestSendCase(unittest.TestCase):
     def _manager(self, **overrides):
         from helpdesk_agent.config import A2AConfig
-        from helpdesk_agent.modules.a2a.client import A2AClientManager
+        from helpdesk_agent.infrastructure.a2a.client import A2AClientManager
 
         defaults = {
             "remote_agents": {"diagnosis-agent": "http://localhost:9000"},
@@ -413,7 +413,7 @@ class TestSendCase(unittest.TestCase):
 
     def test_agentcore_transport_uses_runtime_arn(self) -> None:
         from helpdesk_agent.config import A2AConfig
-        from helpdesk_agent.modules.a2a.client import A2AClientManager
+        from helpdesk_agent.infrastructure.a2a.client import A2AClientManager
 
         manager = A2AClientManager(
             A2AConfig(
@@ -478,7 +478,7 @@ class TestSendCase(unittest.TestCase):
         # messageId and request id) to pin the envelope content.
         with (
             patch("boto3.client", return_value=_fake_boto_client({})),
-            patch("helpdesk_agent.modules.a2a.diagnosis.uuid4", return_value=MagicMock(hex="fixed-uuid")),
+            patch("helpdesk_agent.infrastructure.a2a.envelopes.uuid4", return_value=MagicMock(hex="fixed-uuid")),
         ):
             first = asyncio.run(manager.send_case("diagnosis-agent", _case_payload(), context_id="ctx"))
             second = asyncio.run(manager.send_case("diagnosis-agent", _case_payload(), context_id="ctx"))
@@ -599,7 +599,7 @@ class TestDiagnoseHandoff(unittest.TestCase):
     """Workflow diagnose node triggers the fire-and-forget hand-off."""
 
     def _state(self):
-        from helpdesk_agent.models import WorkflowState
+        from helpdesk_agent.domain.models.workflow import WorkflowState
 
         workflow_state = WorkflowState(case_id="case-1", summary="users cannot log in", service="auth-service")
         return {
@@ -612,7 +612,7 @@ class TestDiagnoseHandoff(unittest.TestCase):
         }
 
     def _workflow(self, manager):
-        from helpdesk_agent.core.workflow import HelpdeskWorkflow
+        from helpdesk_agent.api.factory import HelpdeskWorkflow
 
         workflow = HelpdeskWorkflow(llm_client=MagicMock(), a2a_client_manager=manager)
         workflow.ticket_flow = MagicMock()
@@ -620,7 +620,7 @@ class TestDiagnoseHandoff(unittest.TestCase):
         return workflow
 
     def test_diagnose_triggers_send_case(self) -> None:
-        from helpdesk_agent.modules.a2a.client import DeliveryOutcome
+        from helpdesk_agent.infrastructure.a2a.client import DeliveryOutcome
 
         manager = MagicMock()
         manager.has_target = MagicMock(return_value=True)
@@ -661,7 +661,7 @@ class TestDiagnoseHandoff(unittest.TestCase):
         self.assertEqual(state["workflow_state"].current_step, "diagnosis_required")
 
     def test_diagnose_handoff_failure_degrades_gracefully(self) -> None:
-        from helpdesk_agent.modules.a2a.client import DeliveryOutcome
+        from helpdesk_agent.infrastructure.a2a.client import DeliveryOutcome
 
         manager = MagicMock()
         manager.has_target = MagicMock(return_value=True)

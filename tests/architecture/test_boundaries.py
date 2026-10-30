@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import importlib
 import importlib.util
 from pathlib import Path
 
@@ -71,34 +70,12 @@ def test_dependency_direction(path: Path) -> None:
 
 def test_import_resolution_includes_relative_and_module_imports() -> None:
     imports = imported_modules(
-        "from ..domain import models\nfrom helpdesk_agent import mcp\nimport openai",
+        "from ..domain import models\nfrom helpdesk_agent.infrastructure.mcp import transport\nimport openai",
         "helpdesk_agent.application.example",
     )
-    assert {"helpdesk_agent.domain.models", "helpdesk_agent.mcp", "openai"} <= imports
-
-
-@pytest.mark.parametrize(
-    "legacy,canonical,symbol",
-    [
-        ("models", "domain.models.workflow", "WorkflowState"),
-        ("config", "config.settings", "TriageConfig"),
-        ("observability", "observability.tracing", "operation_span"),
-        ("mcp", "infrastructure.mcp.transport", "MCPProxyAdapter"),
-        ("core.workflow", "api.factory", "HelpdeskWorkflow"),
-        ("dependencies", "api.dependencies", "get_workflow"),
-        ("main", "api.app", "create_app"),
-        ("modules.triage.llm", "infrastructure.llm.client", "LLMTriageClient"),
-        ("modules.triage.llm", "domain.exceptions", "LLMError"),
-        ("modules.triage.schema", "domain.models.triage", "TriageResult"),
-        ("modules.playwright", "domain.models.browser", "PlaywrightAssessment"),
-        ("modules.memory", "domain.exceptions", "MemoryError"),
-        ("modules.chat.service", "infrastructure.persistence.conversations", "ConversationStore"),
-        ("modules.chat.service", "application.chat", "handle_chat_message"),
-        ("modules.ticketing.service", "domain.policies.tickets", "extract_ticket_id"),
-        ("modules.a2a.diagnosis", "infrastructure.a2a.envelopes", "build_send_message_envelope"),
-    ],
-)
-def test_compatibility_exports_preserve_identity(legacy: str, canonical: str, symbol: str) -> None:
-    old = importlib.import_module(f"helpdesk_agent.{legacy}")
-    new = importlib.import_module(f"helpdesk_agent.{canonical}")
-    assert getattr(old, symbol) is getattr(new, symbol)
+    assert {
+        "helpdesk_agent.domain.models",
+        "helpdesk_agent.infrastructure.mcp",
+        "helpdesk_agent.infrastructure.mcp.transport",
+        "openai",
+    } <= imports

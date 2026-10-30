@@ -5,10 +5,10 @@ from fastapi.testclient import TestClient
 
 def test_email_webhook_creates_case_and_ticket() -> None:
     # Mock the LLM client
-    mock_patcher = patch("helpdesk_agent.dependencies.get_llm_client")
+    mock_patcher = patch("helpdesk_agent.api.dependencies.get_llm_client")
     mock_get_llm = mock_patcher.start()
 
-    from helpdesk_agent.modules.triage.schema import TriageResult
+    from helpdesk_agent.domain.models.triage import TriageResult
 
     mock_llm = MagicMock()
     mock_llm.triage_email = AsyncMock(
@@ -28,7 +28,7 @@ def test_email_webhook_creates_case_and_ticket() -> None:
     )
     mock_get_llm.return_value = mock_llm
 
-    from helpdesk_agent.main import create_app
+    from helpdesk_agent.api.app import create_app
 
     client = TestClient(create_app())
     response = client.post(
@@ -62,10 +62,10 @@ def test_email_webhook_creates_case_and_ticket() -> None:
 
 def test_email_webhook_accepts_tool_field_names() -> None:
     """Accept Gmail automation tool field names (from_email, body_plain, message_url)."""
-    mock_patcher = patch("helpdesk_agent.dependencies.get_llm_client")
+    mock_patcher = patch("helpdesk_agent.api.dependencies.get_llm_client")
     mock_get_llm = mock_patcher.start()
 
-    from helpdesk_agent.modules.triage.schema import TriageResult
+    from helpdesk_agent.domain.models.triage import TriageResult
 
     mock_llm = MagicMock()
     mock_llm.triage_email = AsyncMock(
@@ -84,7 +84,7 @@ def test_email_webhook_accepts_tool_field_names() -> None:
     )
     mock_get_llm.return_value = mock_llm
 
-    from helpdesk_agent.main import create_app
+    from helpdesk_agent.api.app import create_app
 
     client = TestClient(create_app())
     response = client.post(
@@ -110,10 +110,10 @@ def test_email_webhook_accepts_tool_field_names() -> None:
 
 def test_email_webhook_accepts_zoho_payload() -> None:
     """Accept a Zoho Mail webhook payload (fromAddress, summary, messageId, ...)."""
-    mock_patcher = patch("helpdesk_agent.dependencies.get_llm_client")
+    mock_patcher = patch("helpdesk_agent.api.dependencies.get_llm_client")
     mock_get_llm = mock_patcher.start()
 
-    from helpdesk_agent.modules.triage.schema import TriageResult
+    from helpdesk_agent.domain.models.triage import TriageResult
 
     mock_llm = MagicMock()
     mock_llm.triage_email = AsyncMock(
@@ -132,7 +132,7 @@ def test_email_webhook_accepts_zoho_payload() -> None:
     )
     mock_get_llm.return_value = mock_llm
 
-    from helpdesk_agent.main import create_app
+    from helpdesk_agent.api.app import create_app
 
     client = TestClient(create_app())
     response = client.post(
@@ -144,7 +144,7 @@ def test_email_webhook_accepts_zoho_payload() -> None:
             "sentDateInGMT": 1560866021000,
             "subject": "Marketing - Product pitch",
             "messageId": 1560840837125110000,
-            "toAddress": "\"Rebecca A\"<rebecca@zylker.com>",
+            "toAddress": '"Rebecca A"<rebecca@zylker.com>',
             "folderId": 3881227000000013000,
             "zuid": 647772765,
             "ccAddress": "",
@@ -154,7 +154,7 @@ def test_email_webhook_accepts_zoho_payload() -> None:
             "fromAddress": "paula@zylker.com",
             "html": (
                 '<meta /><div><div style="font-family:&quot;Trebuchet ms&quot;, Arial, '
-                "Helvetica, sans-serif;font-size:12pt;\"><div>Hi Rebecca,<br /></div>"
+                'Helvetica, sans-serif;font-size:12pt;"><div>Hi Rebecca,<br /></div>'
                 "<div><br /></div><div>I have shared the slide deck for our product pitch "
                 "meeting on Friday. Please take a look and do let me know if you have any "
                 'suggestions.<br /></div><div id=""><div><img src="/zm/ImageDisplay?f=1.png'

@@ -4,13 +4,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from helpdesk_agent.api.factory import HelpdeskWorkflow
 from helpdesk_agent.config import MCPConfig, TriageConfig
-from helpdesk_agent.core.workflow import HelpdeskWorkflow
-from helpdesk_agent.mcp import MCPProxyAdapter, MCPResponse
-from helpdesk_agent.models import WorkflowState
-from helpdesk_agent.modules.playwright import PlaywrightAssessment, PlaywrightEvaluation, PlaywrightValidationFlow
-from helpdesk_agent.modules.ticketing.service import extract_ticket_id
-from helpdesk_agent.modules.triage.schema import TriageResult
+from helpdesk_agent.domain.models.browser import PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.triage import TriageResult
+from helpdesk_agent.domain.models.workflow import WorkflowState
+from helpdesk_agent.domain.policies.tickets import extract_ticket_id
+from helpdesk_agent.infrastructure.mcp.browser import PlaywrightValidationFlow
+from helpdesk_agent.infrastructure.mcp.transport import MCPProxyAdapter, MCPResponse
 
 
 def _triage_result(confidence=0.9, missing_info=None, questions=None):
@@ -69,8 +70,7 @@ async def test_new_issue_creates_ticket_and_diagnoses(mock_llm_client) -> None:
     assert state.events[-1]["details"]["terminal_outcome"] == "diagnosis_required"
     assert len({event["case_id"] for event in state.events}) == 1
     assert any(
-        event["action"] == "gate.decision"
-        and event["details"].get("reason_code") == "faq_search_failed"
+        event["action"] == "gate.decision" and event["details"].get("reason_code") == "faq_search_failed"
         for event in state.events
     )
     assert all(event["case_id"].startswith("case-") for event in state.events)
@@ -181,7 +181,7 @@ def test_playwright_target_requires_explicit_allowlisted_https_url() -> None:
 
 @pytest.mark.asyncio
 async def test_playwright_validation_records_outcome_and_logs_status(mock_llm_client, caplog) -> None:
-    caplog.set_level(logging.INFO, logger="helpdesk_agent.core.workflow")
+    caplog.set_level(logging.INFO, logger="helpdesk_agent.api.factory")
     config = MCPConfig(
         playwright_url="https://playwright.example.com/mcp",
         playwright_allowed_hosts=["portal.example.com"],
@@ -228,8 +228,7 @@ async def test_playwright_validation_records_outcome_and_logs_status(mock_llm_cl
     assert state.metadata["playwright_validation"]["status"] == "reproduced"
     assert state.evidence[-1]["source"] == "playwright"
     assert any(
-        entry["step"] == "playwright_validation" and "outcome=reproduced" in entry["detail"]
-        for entry in state.history
+        entry["step"] == "playwright_validation" and "outcome=reproduced" in entry["detail"] for entry in state.history
     )
     assert "stage=playwright_validation status=completed outcome=reproduced" in caplog.text
     adapter.call_tool_sequence.assert_awaited_once()
@@ -296,9 +295,7 @@ async def test_stale_ticket_id_falls_back_to_new_issue(mock_llm_client) -> None:
 
     # Fell through to new-ticket path
     assert any(entry["step"] == "create_ticket" for entry in state.history)
-    assert any(
-        entry["step"] == "load_ticket" and entry["status"] == "not_found" for entry in state.history
-    )
+    assert any(entry["step"] == "load_ticket" and entry["status"] == "not_found" for entry in state.history)
     assert state.ticket["ticket_id"] == "JIRA-email-y"
 
 
@@ -397,9 +394,7 @@ def test_custom_clarification_round_cap_is_used(mock_llm_client) -> None:
 async def test_ticket_creation_failure_stops_run(mock_llm_client) -> None:
     """If Jira ticket creation fails, stop before ack/triage — no phantom ID."""
     workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
-    workflow.ticket_flow.create_ticket = AsyncMock(
-        return_value={"status": "failed", "error": "connection refused"}
-    )
+    workflow.ticket_flow.create_ticket = AsyncMock(return_value={"status": "failed", "error": "connection refused"})
     workflow.mail_flow.reply_email = AsyncMock(return_value={"status": "sent"})
 
     state = await workflow.run(

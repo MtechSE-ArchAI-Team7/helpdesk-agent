@@ -20,16 +20,20 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
-from helpdesk_agent import cli, dependencies, main, observability
+import helpdesk_agent.api.app as main
+from helpdesk_agent import cli, observability
+from helpdesk_agent.api import dependencies
+from helpdesk_agent.api.dependencies import get_workflow
+from helpdesk_agent.api.factory import HelpdeskWorkflow
+from helpdesk_agent.application.chat import handle_chat_message
 from helpdesk_agent.config import A2AConfig, LLMConfig, MCPConfig, MemoryConfig, TriageConfig
-from helpdesk_agent.core.workflow import HelpdeskWorkflow
-from helpdesk_agent.dependencies import get_workflow
-from helpdesk_agent.mcp import MCPProxyAdapter
-from helpdesk_agent.modules.a2a.client import A2AClientManager
-from helpdesk_agent.modules.chat.service import ConversationStore, handle_chat_message
-from helpdesk_agent.modules.memory import FACTS_NAMESPACE, SUMMARY_NAMESPACE, AgentCoreMemory, MemoryError
-from helpdesk_agent.modules.triage.guardrails import GuardrailsValidator
-from helpdesk_agent.modules.triage.llm import LLMError, LLMTriageClient
+from helpdesk_agent.domain.exceptions import LLMError, MemoryError
+from helpdesk_agent.infrastructure.a2a.client import A2AClientManager
+from helpdesk_agent.infrastructure.llm.client import LLMTriageClient
+from helpdesk_agent.infrastructure.mcp.transport import MCPProxyAdapter
+from helpdesk_agent.infrastructure.memory.agentcore import FACTS_NAMESPACE, SUMMARY_NAMESPACE, AgentCoreMemory
+from helpdesk_agent.infrastructure.persistence.conversations import ConversationStore
+from helpdesk_agent.reasoning.guardrails import GuardrailsValidator
 
 pytestmark = pytest.mark.archived
 URL = "https://portal.example.com/login"
@@ -223,11 +227,11 @@ def stack(monkeypatch):
         async def call_tool(self, name, arguments):
             return services.tool(name, arguments)
 
-    monkeypatch.setattr("helpdesk_agent.mcp.streamablehttp_client", transport)
-    monkeypatch.setattr("helpdesk_agent.mcp.ClientSession", lambda *_: Session())
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.streamablehttp_client", transport)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.mcp.transport.ClientSession", lambda *_: Session())
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(services.completion))
     sdk = AsyncOpenAI(api_key="placeholder", http_client=http_client, max_retries=0)
-    monkeypatch.setattr("helpdesk_agent.modules.triage.llm.AsyncOpenAI", lambda **_: sdk)
+    monkeypatch.setattr("helpdesk_agent.infrastructure.llm.transport.AsyncOpenAI", lambda **_: sdk)
     llm = LLMTriageClient(LLMConfig(api_key="placeholder", model="test-model"), guardrails=GuardrailsValidator())
     adapter = MCPProxyAdapter(
         MCPConfig(
@@ -844,7 +848,7 @@ def test_lambda_agentcore_contract_forwards_to_real_api_and_reports_aws_errors(s
     app = main.create_app()
     app.dependency_overrides[get_workflow] = lambda: workflow
     monkeypatch.setattr("boto3.client", lambda *args, **kwargs: MagicMock())
-    handler = importlib.import_module("helpdesk_agent.modules.aws_lambda.handler")
+    handler = importlib.import_module("helpdesk_agent.api.lambda_handler")
     monkeypatch.setattr(handler, "AGENT_RUNTIME_ARN", "test-runtime")
     monkeypatch.setattr(handler, "WEBHOOK_SECRET", "test-secret")
     body = json.dumps({"sender": "user@example.com", "subject": "Login", "body": "Login problem", "message_id": "123"})

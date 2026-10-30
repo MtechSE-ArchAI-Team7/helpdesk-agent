@@ -7,7 +7,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-import uvicorn
 from a2a.server.apps import A2AFastAPIApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -97,12 +96,3 @@ def create_app() -> FastAPI:
     ).add_routes_to_app(app, rpc_url=A2A_RPC_PATH)
 
     return app
-
-
-def main() -> None:
-    port = int(os.getenv("PORT", "8080"))
-    uvicorn.run("helpdesk_agent.main:create_app", host="0.0.0.0", port=port, factory=True)  # nosec B104
-
-
-if __name__ == "__main__":
-    main()

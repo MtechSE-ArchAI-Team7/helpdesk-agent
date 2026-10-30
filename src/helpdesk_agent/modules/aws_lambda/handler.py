@@ -1,4 +1,4 @@
-"""Compatibility exports; implementations live in the canonical package."""
+"""AWS Lambda deployment entrypoint."""
 
 from helpdesk_agent.api.lambda_handler import AGENT_QUALIFIER as AGENT_QUALIFIER
 from helpdesk_agent.api.lambda_handler import AGENT_RUNTIME_ARN as AGENT_RUNTIME_ARN

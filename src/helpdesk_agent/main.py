@@ -1,8 +1,14 @@
-"""Compatibility exports; implementations live in the canonical package."""
+"""CLI entrypoint for running the helpdesk API server."""
 
-from helpdesk_agent.api.app import _lifespan as _lifespan
-from helpdesk_agent.api.app import create_app as create_app
-from helpdesk_agent.api.app import main as main
+import os
+
+import uvicorn
+
+
+def main() -> None:
+    port = int(os.getenv("PORT", "8080"))
+    uvicorn.run("helpdesk_agent.api.app:create_app", host="0.0.0.0", port=port, factory=True)  # nosec B104
+
 
 if __name__ == "__main__":
     main()

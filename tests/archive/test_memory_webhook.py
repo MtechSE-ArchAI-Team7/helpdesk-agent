@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from helpdesk_agent.dependencies import get_workflow
-from helpdesk_agent.main import create_app
-from helpdesk_agent.modules.memory import MemoryError
+from helpdesk_agent.api.app import create_app
+from helpdesk_agent.api.dependencies import get_workflow
+from helpdesk_agent.domain.exceptions import MemoryError
 
 
 @pytest.fixture
@@ -16,13 +16,16 @@ def webhook():
     workflow.memory.save_snapshot = AsyncMock()
     workflow.ticket_flow.get_ticket = AsyncMock(
         return_value={
-            "status": "success", "ticket_id": "HELP-1", "summary": "Login failures",
+            "status": "success",
+            "ticket_id": "HELP-1",
+            "summary": "Login failures",
             "description": "Users receive callback errors",
             "comments": [{"body": "Corrected callback URL; user testing pending", "author": "private-user"}],
-            "issue_status": "In Progress", "resolution": None,
+            "issue_status": "In Progress",
+            "resolution": None,
         }
     )
-    with patch("helpdesk_agent.dependencies.get_llm_client"):
+    with patch("helpdesk_agent.api.dependencies.get_llm_client"):
         app = create_app()
     app.dependency_overrides[get_workflow] = lambda: workflow
     with TestClient(app) as client:
@@ -32,7 +35,8 @@ def webhook():
 def test_jira_updates_refetch_and_ingest_troubleshooting(webhook):
     client, workflow = webhook
     payload = {
-        "issue": {"key": "HELP-1", "description": "Do not trust webhook text"}, "webhookEvent": "jira:issue_updated"
+        "issue": {"key": "HELP-1", "description": "Do not trust webhook text"},
+        "webhookEvent": "jira:issue_updated",
     }
     for _ in range(2):
         response = client.post("/webhooks/jira", json=payload)
@@ -82,7 +86,7 @@ def test_lambda_forwards_jira_and_preserves_email_contract(monkeypatch):
     import io
 
     with patch("boto3.client"):
-        handler = importlib.import_module("helpdesk_agent.modules.aws_lambda.handler")
+        handler = importlib.import_module("helpdesk_agent.api.lambda_handler")
     monkeypatch.setattr(handler, "AGENT_RUNTIME_ARN", "runtime-arn")
     monkeypatch.setattr(handler, "WEBHOOK_SECRET", "test-webhook-secret")
     client = MagicMock()
@@ -109,8 +113,8 @@ def test_provisioning_creates_ticket_scoped_strategies(monkeypatch, capsys):
     from botocore.session import get_session
     from botocore.validate import validate_parameters
 
+    from helpdesk_agent.infrastructure.memory.agentcore import FACTS_NAMESPACE, SUMMARY_NAMESPACE
     from helpdesk_agent.memory_setup import main
-    from helpdesk_agent.modules.memory import FACTS_NAMESPACE, SUMMARY_NAMESPACE
 
     monkeypatch.setattr("sys.argv", ["helpdesk-memory-create", "--name", "HelpdeskMemory", "--region", "us-west-2"])
     client = MagicMock()

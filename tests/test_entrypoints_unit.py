@@ -11,6 +11,8 @@ from fastapi import HTTPException
 
 import helpdesk_agent.api.app as main
 import helpdesk_agent.api.dependencies as dependencies
+import helpdesk_agent.api.routes.chat as chat_router
+import helpdesk_agent.main as server_main
 from helpdesk_agent import cli, memory_setup
 from helpdesk_agent.api.routes.email import email_webhook
 from helpdesk_agent.api.routes.ticketing import JiraMemoryWebhook, jira_memory_webhook
@@ -21,7 +23,6 @@ from helpdesk_agent.domain.models.chat_response import ChatMessage
 from helpdesk_agent.domain.models.workflow import WorkflowState
 from helpdesk_agent.infrastructure.memory.agentcore import MemoryError
 from helpdesk_agent.infrastructure.persistence.conversations import ConversationStore
-from helpdesk_agent.modules.chat import router as chat_router
 
 pytestmark = pytest.mark.unit
 
@@ -186,9 +187,9 @@ def test_cli_passes_arguments_and_prints_result(monkeypatch, capsys):
 
 def test_server_main_uses_configured_port(monkeypatch):
     monkeypatch.setenv("PORT", "9000")
-    with patch.object(main.uvicorn, "run") as run:
-        main.main()
-    run.assert_called_once_with("helpdesk_agent.main:create_app", host="0.0.0.0", port=9000, factory=True)
+    with patch.object(server_main.uvicorn, "run") as run:
+        server_main.main()
+    run.assert_called_once_with("helpdesk_agent.api.app:create_app", host="0.0.0.0", port=9000, factory=True)
 
 
 @pytest.mark.asyncio
