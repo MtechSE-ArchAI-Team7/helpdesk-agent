@@ -48,7 +48,7 @@ def test_overview_links_results_and_escapes_content():
     assert 'class="failed">FAIL</td>' in report
     overview = report.split("<h2>Test overview</h2>", 1)[1].split("</table>", 1)[0]
     assert overview.count('<th scope="col">') == 6
-    assert "<th scope=\"col\">Operation</th>" not in overview
+    assert '<th scope="col">Operation</th>' not in overview
     assert "Score / threshold" not in overview
     assert "<td>triage</td>" not in overview
     assert "score 1 / threshold 1" in report
@@ -58,8 +58,8 @@ def test_overview_links_results_and_escapes_content():
     assert "<unsafe>" not in report
     assert "article, tbody tr[data-status]" in report
     assert 'data-area="classification"' in report
-    assert '<td>classification</td>' in report
-    assert 'Category: classification' in report
+    assert "<td>classification</td>" in report
+    assert "Category: classification" in report
     assert '<option value="classification">classification</option>' in report
     assert "row.dataset.area !== areaFilter.value" in report
 
@@ -84,17 +84,10 @@ def test_category_summary_counts_rates_and_placement():
     )
     summary = report.split('<table id="category-summary">', 1)[1].split("</table>", 1)[0]
     assert summary.count('<th scope="col">') == 5
+    assert ('<td>security</td><td>2</td><td class="passed">1</td><td class="failed">1</td><td>50.0%</td>') in summary
     assert (
-        '<td>security</td><td>2</td><td class="passed">1</td>'
-        '<td class="failed">1</td><td>50.0%</td>'
+        '<td>&lt;classification&gt;</td><td>1</td><td class="passed">1</td><td class="failed">0</td><td>100.0%</td>'
     ) in summary
-    assert (
-        '<td>&lt;classification&gt;</td><td>1</td><td class="passed">1</td>'
-        '<td class="failed">0</td><td>100.0%</td>'
-    ) in summary
-    assert (
-        '<td>unknown</td><td>1</td><td class="passed">0</td>'
-        '<td class="failed">1</td><td>0.0%</td>'
-    ) in summary
+    assert ('<td>unknown</td><td>1</td><td class="passed">0</td><td class="failed">1</td><td>0.0%</td>') in summary
     assert "data-status" not in summary
-    assert report.index('id="category-summary"') < report.index('<label>Status')
+    assert report.index('id="category-summary"') < report.index("<label>Status")

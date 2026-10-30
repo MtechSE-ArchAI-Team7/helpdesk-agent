@@ -82,7 +82,9 @@ def _build_server() -> FastMCP:
         }
 
     @mcp.tool(name="ZohoMail_listEmails")
-    def zohomail_list_emails(path_variables: dict[str, Any], query_params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def zohomail_list_emails(
+        path_variables: dict[str, Any], query_params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return {
             "status": "completed",
             "action_id": f"action-{uuid.uuid4().hex[:8]}",
@@ -155,15 +157,12 @@ class MockMCPServer:
         self.port = port
         self._mcp = _build_server()
         app = self._mcp.http_app(path="/mcp", transport="streamable-http")
-        self._server = uvicorn.Server(
-            uvicorn.Config(app, host=host, port=port, log_level="error")
-        )
+        self._server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="error"))
         import threading
 
         self._thread = threading.Thread(target=self._server.run, daemon=True)
 
     def start(self) -> None:
-        import threading
         import time
 
         self._thread.start()

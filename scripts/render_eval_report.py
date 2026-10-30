@@ -54,12 +54,15 @@ def render_report(data: dict[str, Any]) -> str:
             f"<td>{area}</td>"
             f"<td>{duration}</td><td>{reasons}</td></tr>"
         )
-        metric_rows = "".join(
-            f"<li><strong>{escaped(metric['name'])}</strong>: "
-            f"score {escaped(metric.get('score'))} / threshold {escaped(metric.get('threshold'))}"
-            f"<p>{escaped(metric.get('reason') or metric.get('error') or '')}</p></li>"
-            for metric in metrics
-        ) or "<li>Not available</li>"
+        metric_rows = (
+            "".join(
+                f"<li><strong>{escaped(metric['name'])}</strong>: "
+                f"score {escaped(metric.get('score'))} / threshold {escaped(metric.get('threshold'))}"
+                f"<p>{escaped(metric.get('reason') or metric.get('error') or '')}</p></li>"
+                for metric in metrics
+            )
+            or "<li>Not available</li>"
+        )
         details = "".join(
             f"<h4>{label}</h4><pre>{escaped(output_text(case.get(field)))}</pre>"
             for label, field in (

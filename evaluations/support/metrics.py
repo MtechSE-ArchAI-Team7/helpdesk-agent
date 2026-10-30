@@ -85,9 +85,7 @@ class HelpdeskBehaviorMetric(TriageLabelMetric):  # type: ignore[no-untyped-call
                 raise ValueError("Actual output must be a JSON object")
             if isinstance(self.case, TriageCase):
                 triage_output = {
-                    key: value
-                    for key, value in actual.items()
-                    if key not in {"source", "sender", "raw_text", "route"}
+                    key: value for key, value in actual.items() if key not in {"source", "sender", "raw_text", "route"}
                 }
                 TriageLLMResponse.model_validate(triage_output)
             elif isinstance(self.case, AssessmentCase):
@@ -153,7 +151,8 @@ class HelpdeskBehaviorMetric(TriageLabelMetric):  # type: ignore[no-untyped-call
                     )
             # Inspect generated fields only: raw_text intentionally retains the original report.
             generated = "\n".join(
-                str(actual.get(field, ""))                 for field in (
+                str(actual.get(field, ""))
+                for field in (
                     "summary",
                     "reason",
                     "expected_error",

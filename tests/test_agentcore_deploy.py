@@ -17,9 +17,14 @@ def current_runtime() -> dict:
         "status": "READY",
         "roleArn": "arn:aws:iam::123456789012:role/runtime",
         "agentRuntimeArtifact": {"containerConfiguration": {"containerUri": "old-image"}},
-        "networkConfiguration": {"networkMode": "VPC", "networkModeConfig": {
-            "subnets": ["subnet-123"], "securityGroups": ["sg-123"], "requireServiceS3Endpoint": False,
-        }},
+        "networkConfiguration": {
+            "networkMode": "VPC",
+            "networkModeConfig": {
+                "subnets": ["subnet-123"],
+                "securityGroups": ["sg-123"],
+                "requireServiceS3Endpoint": False,
+            },
+        },
         "protocolConfiguration": {"serverProtocol": "HTTP"},
         "environmentVariables": {"KEEP": "existing-value"},
         "authorizerConfiguration": {"customJWTAuthorizer": {"discoveryUrl": "https://identity.example/.well-known"}},
@@ -45,12 +50,15 @@ def test_preserves_configuration_and_only_replaces_image(current_runtime: dict) 
     assert current_runtime == original
 
 
-@pytest.mark.parametrize("field,value", [
-    ("agentRuntimeArtifact", {"codeConfiguration": {}}),
-    ("protocolConfiguration", {"serverProtocol": "MCP"}),
-    ("status", "UPDATING"),
-    ("roleArn", None),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("agentRuntimeArtifact", {"codeConfiguration": {}}),
+        ("protocolConfiguration", {"serverProtocol": "MCP"}),
+        ("status", "UPDATING"),
+        ("roleArn", None),
+    ],
+)
 def test_rejects_incompatible_runtime(current_runtime: dict, field: str, value: object) -> None:
     current_runtime[field] = value
     with pytest.raises(ValueError):
@@ -87,9 +95,18 @@ def test_timeout_is_not_success(current_runtime: dict) -> None:
         deploy.update_runtime(client, "helpdesk-123", IMAGE_URI, timeout_seconds=0)
 
 
-@pytest.mark.parametrize("field,value", [("agentRuntimeVersion", "1"), ("agentRuntimeArtifact", {
-    "containerConfiguration": {"containerUri": "wrong-image"},
-})])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("agentRuntimeVersion", "1"),
+        (
+            "agentRuntimeArtifact",
+            {
+                "containerConfiguration": {"containerUri": "wrong-image"},
+            },
+        ),
+    ],
+)
 def test_ready_must_match_version_and_image(current_runtime: dict, field: str, value: object) -> None:
     ready = deepcopy(current_runtime)
     ready["agentRuntimeVersion"] = "2"

@@ -85,7 +85,7 @@ async def test_new_issue_sends_acknowledgment_with_ticket_subject(mock_llm_clien
     workflow = HelpdeskWorkflow(llm_client=mock_llm_client)
     workflow.mail_flow.reply_email = AsyncMock(return_value={"status": "sent", "reply_message_id": "r-1"})
 
-    state = await workflow.run(
+    await workflow.run(
         {
             "case_id": "case-002",
             "summary": "Login issues\n\nI cannot log in",
@@ -148,7 +148,8 @@ def test_text_to_html_renders_bullets_as_list(mock_llm_client) -> None:
     """Plaintext "- " bullets collapse into a run-on paragraph in Zoho; the
     HTML version must use a real list."""
     html = HelpdeskWorkflow._text_to_html(
-        "Thank you for contacting support. We need:\n- What browser are you using?\n- What time did it fail?\n\nBest regards,\nHelpdesk Team"
+        "Thank you for contacting support. We need:\n- What browser are you using?\n"
+        "- What time did it fail?\n\nBest regards,\nHelpdesk Team"
     )
     assert "<ul>" in html and "<li>What browser are you using?</li>" in html
     assert "<li>What time did it fail?</li>" in html
