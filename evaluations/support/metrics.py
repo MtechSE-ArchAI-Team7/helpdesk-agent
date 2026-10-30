@@ -11,9 +11,16 @@ from evaluations.support.schemas import (
     AssessmentCase,
     EvidenceCase,
     Labels,
+    PlanningCase,
+    ReactCase,
     TriageCase,
 )
-from helpdesk_agent.domain.models.browser import PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.browser import (
+    BrowserPlan,
+    BrowserReactAction,
+    PlaywrightAssessment,
+    PlaywrightEvaluation,
+)
 from helpdesk_agent.domain.models.triage import TriageLLMResponse
 from helpdesk_agent.domain.policies.browser import BrowserTargetPolicy
 
@@ -59,7 +66,10 @@ class TriageLabelMetric(BaseMetric):  # type: ignore[no-untyped-call]
 
 
 class HelpdeskBehaviorMetric(TriageLabelMetric):  # type: ignore[no-untyped-call]
-    def __init__(self, case: TriageCase | AssessmentCase | EvidenceCase) -> None:
+    def __init__(
+        self,
+        case: TriageCase | AssessmentCase | EvidenceCase | PlanningCase | ReactCase,
+    ) -> None:
         super().__init__()
         self.case = case
 
@@ -74,17 +84,39 @@ class HelpdeskBehaviorMetric(TriageLabelMetric):  # type: ignore[no-untyped-call
             if not isinstance(actual, dict):
                 raise ValueError("Actual output must be a JSON object")
             if isinstance(self.case, TriageCase):
-                TriageLLMResponse.model_validate(actual)
+                triage_output = {
+                    key: value
+                    for key, value in actual.items()
+                    if key not in {"source", "sender", "raw_text", "route"}
+                }
+                TriageLLMResponse.model_validate(triage_output)
             elif isinstance(self.case, AssessmentCase):
                 PlaywrightAssessment.model_validate(actual)
-            else:
+            elif isinstance(self.case, EvidenceCase):
                 PlaywrightEvaluation.model_validate(actual)
+            elif isinstance(self.case, PlanningCase):
+                BrowserPlan.model_validate(actual)
+            else:
+                BrowserReactAction.model_validate(actual)
             expected = self.case.expected.model_dump(exclude_unset=True)
+            if isinstance(self.case, PlanningCase):
+                allowed_tools = set(expected.pop("allowed_tools"))
+                inspection_order = actual.get("inspection_order")
+                if not isinstance(inspection_order, list) or not inspection_order:
+                    failures = ["inspection_order must contain at least one allowed tool"]
+                else:
+                    failures = [
+                        f"inspection_order contains disallowed tool: {tool!r}"
+                        for tool in inspection_order
+                        if tool not in allowed_tools
+                    ]
+            else:
+                failures = []
             failures = [
                 f"{field}: expected {value!r}, got {actual.get(field)!r}"
                 for field, value in expected.items()
                 if actual.get(field) != value
-            ]
+            ] + failures
             if (
                 isinstance(self.case, TriageCase)
                 and self.case.routing is not None
@@ -121,7 +153,14 @@ class HelpdeskBehaviorMetric(TriageLabelMetric):  # type: ignore[no-untyped-call
                     )
             # Inspect generated fields only: raw_text intentionally retains the original report.
             generated = "\n".join(
-                str(actual.get(field, "")) for field in ("summary", "reason", "expected_error", "clarifying_questions")
+                str(actual.get(field, ""))                 for field in (
+                    "summary",
+                    "reason",
+                    "expected_error",
+                    "clarifying_questions",
+                    "objective",
+                    "decision_summary",
+                )
             )
             if re.search(
                 r"(?<!not )(?<!never )(?<!don't )(?<!avoid )"
@@ -140,6 +179,9 @@ class HelpdeskBehaviorMetric(TriageLabelMetric):  # type: ignore[no-untyped-call
                     failures.append("Target URL was not explicitly supplied in the report")
                 if actual.get("decision") == "eligible" and not str(actual.get("expected_error", "")).strip():
                     failures.append("Eligible assessment has no expected error")
+            if isinstance(self.case, ReactCase) and actual.get("action") == "inspect":
+                if actual.get("tool") not in self.case.inspection_order:
+                    failures.append("ReAct selected an unplanned browser tool")
             self.score = 0.0 if failures else 1.0
             self.success = not failures
             self.reason = "; ".join(failures) if failures else "All expected behaviors matched"

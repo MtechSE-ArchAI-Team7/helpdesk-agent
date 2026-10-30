@@ -159,6 +159,21 @@ def test_output_schema_is_enforced_by_guardrails():
         validator._validate_output(json.dumps(payload), TriageLLMResponse)
 
 
+def test_output_schema_rejects_unexpected_triage_fields():
+    validator = GuardrailsValidator()
+    payload = {
+        "service": "identity",
+        "issue_type": "access",
+        "priority": "high",
+        "confidence": 0.9,
+        "summary": "Account access issue",
+        "debug_token": "synthetic-token",
+    }
+
+    with pytest.raises(GuardrailsRejected):
+        validator._validate_output(json.dumps(payload), TriageLLMResponse)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("expected_error", ["", None])
 async def test_non_browser_assessment_contract(expected_error):

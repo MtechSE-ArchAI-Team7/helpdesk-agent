@@ -3,6 +3,8 @@ from __future__ import annotations
 from evaluations.support.schemas import (
     AssessmentCase,
     EvidenceCase,
+    PlanningCase,
+    ReactCase,
     TriageCase,
 )
 from helpdesk_agent.api.factory import CLARIFICATION_COMMENT_MARKER, GraphState, HelpdeskWorkflow
@@ -43,7 +45,7 @@ def evaluate_route(client: LLMTriageClient, case: TriageCase, result: TriageResu
 
 async def run_case(
     client: LLMTriageClient,
-    case: TriageCase | AssessmentCase | EvidenceCase,
+    case: TriageCase | AssessmentCase | EvidenceCase | PlanningCase | ReactCase,
 ) -> dict[str, object]:
     if isinstance(case, TriageCase):
         result = await client.triage_email(case.subject, case.body, history_snippets=case.history_snippets)
@@ -54,5 +56,18 @@ async def run_case(
     if isinstance(case, AssessmentCase):
         assessment = await client.assess_playwright_validation(case.subject, case.body, case.triage_summary)
         return assessment.model_dump()
-    evaluation = await client.evaluate_playwright_validation(case.expected_error, case.evidence)
-    return evaluation.model_dump()
+    if isinstance(case, EvidenceCase):
+        evaluation = await client.evaluate_playwright_validation(case.expected_error, case.evidence)
+        return evaluation.model_dump()
+    if isinstance(case, PlanningCase):
+        plan = await client.plan_browser(case.target_url, case.expected_error, case.summary)
+        return plan.model_dump()
+    action = await client.react_browser(
+        case.target_url,
+        case.expected_error,
+        case.summary,
+        [str(tool) for tool in case.inspection_order],
+        case.observations,
+        case.round_number,
+    )
+    return action.model_dump()

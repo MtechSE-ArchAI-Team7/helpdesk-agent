@@ -10,6 +10,8 @@ from helpdesk_agent.domain.policies.priority import Priority
 class TriageLLMResponse(BaseModel):
     """Constrained response contract for the triage model."""
 
+    model_config = ConfigDict(extra="forbid")
+
     service: Literal["jira", "slack", "email", "identity", "platform", "prometheus", "unknown"]
     issue_type: Literal["access", "incident", "performance", "deployment", "general"]
     priority: Priority

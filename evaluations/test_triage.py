@@ -20,13 +20,20 @@ from evaluations.support.schemas import (
     AssessmentExpected,
     EvidenceCase,
     Labels,
+    PlanningCase,
+    ReactCase,
     RoutingFixture,
     TextCheck,
     TriageCase,
     TriageExpected,
 )
 from helpdesk_agent.config.settings import LLMConfig
-from helpdesk_agent.domain.models.browser import PlaywrightAssessment, PlaywrightEvaluation
+from helpdesk_agent.domain.models.browser import (
+    BrowserPlan,
+    BrowserReactAction,
+    PlaywrightAssessment,
+    PlaywrightEvaluation,
+)
 from helpdesk_agent.domain.models.triage import TriageResult
 from helpdesk_agent.infrastructure.llm.client import LLMError, LLMTriageClient
 from helpdesk_agent.reasoning.guardrails import get_guardrails_validator
@@ -51,7 +58,9 @@ def test_evaluation_labels_accept_five_level_priority_policy(priority: str) -> N
 @pytest.mark.functional
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.id)
-async def test_live_triage(case: TriageCase | AssessmentCase | EvidenceCase) -> None:
+async def test_live_triage(
+    case: TriageCase | AssessmentCase | EvidenceCase | PlanningCase | ReactCase,
+) -> None:
     config = LLMConfig.from_env()
     if not config.api_key or config.api_key == "test-api-key":
         pytest.fail("Live evaluation requires HELPDESK_AGENT_LLM_API_KEY, not a dummy test key")
@@ -149,8 +158,19 @@ def test_dataset_rejects_invalid_cases(tmp_path: Path, data: dict[str, object]) 
 def test_suite_inheritance_and_coverage() -> None:
     testing = select_cases("testing")
     evaluation = select_cases("evaluation")
+    security = select_cases("security")
     assert len(testing) == 18
     assert len(evaluation) == 60
+    assert len(security) == 18
+    assert all(case.area == "security" for case in security)
+    assert {case.id for case in evaluation if case.area == "security"} <= {case.id for case in security}
+    assert {case.operation for case in security} == {
+        "triage",
+        "browser_assessment",
+        "browser_evidence",
+        "browser_planning",
+        "browser_react",
+    }
     assert evaluation[: len(testing)] == testing
     for cases in (testing, evaluation):
         assert {case.operation for case in cases} == {"triage", "browser_assessment", "browser_evidence"}
@@ -173,7 +193,12 @@ def test_dataset_requires_known_area(tmp_path: Path, area: str | None) -> None:
 @pytest.mark.unit
 def test_all_scenarios_reference_ecommerce_demo() -> None:
     for case in select_cases("evaluation"):
-        text = case.evidence if isinstance(case, EvidenceCase) else f"{case.subject}\n{case.body}"
+        if isinstance(case, EvidenceCase):
+            text = case.evidence
+        elif isinstance(case, (TriageCase, AssessmentCase)):
+            text = f"{case.subject}\n{case.body}"
+        else:
+            text = f"{case.target_url}\n{case.expected_error}\n{case.summary}"
         assert "Buggy E-Commerce Demo" in text, case.id
         if isinstance(case, TriageCase) and case.expected.service is not None:
             assert case.expected.service in {"platform", "identity"}, case.id
@@ -387,9 +412,13 @@ def test_live_result_routing_uses_production_gates(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["triage", "browser_assessment", "browser_evidence"])
+@pytest.mark.parametrize(
+    "operation",
+    ["triage", "browser_assessment", "browser_evidence", "browser_planning", "browser_react"],
+)
 async def test_runner_dispatches_one_model_call(operation: str) -> None:
-    case = next(case for case in select_cases("testing") if case.operation == operation)
+    cases = select_cases("security") if operation in {"browser_planning", "browser_react"} else select_cases("testing")
+    case = next(case for case in cases if case.operation == operation)
     client = MagicMock(spec=LLMTriageClient)
     client.triage_email = AsyncMock(return_value=sample_triage())
     client.assess_playwright_validation = AsyncMock(
@@ -397,6 +426,12 @@ async def test_runner_dispatches_one_model_call(operation: str) -> None:
     )
     client.evaluate_playwright_validation = AsyncMock(
         return_value=PlaywrightEvaluation(status="inconclusive", summary="Insufficient evidence"),
+    )
+    client.plan_browser = AsyncMock(
+        return_value=BrowserPlan(objective="Inspect public evidence", inspection_order=["browser_snapshot"]),
+    )
+    client.react_browser = AsyncMock(
+        return_value=BrowserReactAction(action="finish", decision_summary="The evidence is sufficient"),
     )
     actual = await run_case(client, case)
     assert actual
@@ -408,8 +443,19 @@ async def test_runner_dispatches_one_model_call(operation: str) -> None:
         )
     elif isinstance(case, AssessmentCase):
         client.assess_playwright_validation.assert_awaited_once_with(case.subject, case.body, case.triage_summary)
-    else:
+    elif isinstance(case, EvidenceCase):
         client.evaluate_playwright_validation.assert_awaited_once_with(case.expected_error, case.evidence)
+    elif isinstance(case, PlanningCase):
+        client.plan_browser.assert_awaited_once_with(case.target_url, case.expected_error, case.summary)
+    else:
+        client.react_browser.assert_awaited_once_with(
+            case.target_url,
+            case.expected_error,
+            case.summary,
+            [str(tool) for tool in case.inspection_order],
+            case.observations,
+            case.round_number,
+        )
     assert (
         sum(
             method.await_count
@@ -417,6 +463,8 @@ async def test_runner_dispatches_one_model_call(operation: str) -> None:
                 client.triage_email,
                 client.assess_playwright_validation,
                 client.evaluate_playwright_validation,
+                client.plan_browser,
+                client.react_browser,
             )
         )
         == 1

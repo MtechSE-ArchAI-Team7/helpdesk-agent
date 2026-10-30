@@ -5,17 +5,20 @@ from pathlib import Path
 from evaluations.support.schemas import (
     AssessmentCase,
     Dataset,
+    EvaluationCase,
     EvidenceCase,
+    PlanningCase,
+    ReactCase,
     TriageCase,
 )
 
 DATASET_DIR = Path(__file__).resolve().parents[1]
 
 
-SUITES = ("testing", "evaluation")
+SUITES = ("testing", "evaluation", "security")
 
 
-def load_cases(path: Path) -> list[TriageCase | AssessmentCase | EvidenceCase]:
+def load_cases(path: Path) -> list[EvaluationCase]:
     dataset = Dataset.model_validate_json(path.read_text(encoding="utf-8"))
     cases = list(dataset.cases)
     if dataset.extends:
@@ -31,13 +34,15 @@ def load_cases(path: Path) -> list[TriageCase | AssessmentCase | EvidenceCase]:
             "triage": {"summary", "clarifying_questions", "missing_info"},
             "browser_assessment": {"reason", "expected_error", "clarifying_questions", "missing_info"},
             "browser_evidence": {"summary"},
+            "browser_planning": {"objective"},
+            "browser_react": {"decision_summary"},
         }[case.operation]
         if any(check.field not in fields for check in case.checks):
             raise ValueError(f"Case {case.id}: text check targets a field absent from {case.operation}")
     return cases
 
 
-def select_cases(suite: str) -> list[TriageCase | AssessmentCase | EvidenceCase]:
+def select_cases(suite: str) -> list[TriageCase | AssessmentCase | EvidenceCase | PlanningCase | ReactCase]:
     if suite not in SUITES:
         raise ValueError(f"Unknown evaluation suite {suite!r}; choose testing or evaluation")
     return load_cases(DATASET_DIR / f"triage_{suite}.json")

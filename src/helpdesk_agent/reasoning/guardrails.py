@@ -75,6 +75,7 @@ class GuardrailsValidator:
                 schema_result = schema_guard.parse(llm_output=content, num_reasks=0)
                 if not schema_result.validation_passed:
                     raise GuardrailsRejected("Model output did not match its schema")
+            output_model.model_validate_json(content)
             if _contains_match(_PII_PATTERNS, content):
                 raise GuardrailsRejected("Model output matched a common PII pattern")
             if _contains_match(_TOXIC_OUTPUT_PATTERNS, content):

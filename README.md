@@ -103,6 +103,7 @@ uv run pytest -m unit --strict-markers
 uv run pytest tests/integration/ -m integration --live-mcp --live-llm --strict-markers
 uv run --group eval pytest evaluations/test_triage.py -m unit
 HELPDESK_AGENT_EVAL_SUITE=testing uv run --group eval deepeval test run evaluations/test_triage.py -m functional
+HELPDESK_AGENT_EVAL_SUITE=security uv run --group eval deepeval test run evaluations/test_triage.py -m functional
 HELPDESK_AGENT_EVAL_SUITE=evaluation uv run --group eval deepeval test run evaluations/test_triage.py -m functional
 ```
 
@@ -116,6 +117,11 @@ Live DeepEval evaluations use two synthetic datasets:
   cases and adds 42 cases, for 60 total. Run less frequently (nightly/weekly or
   before major model/prompt changes). The full suite is organized into seven
   explicit areas; no schedule is enabled automatically.
+- [Security](evaluations/triage_security.json): runs 18 security-focused cases
+  independently. It includes the 12 security cases in the full evaluation plus
+  live checks for direct classification manipulation, sensitive-data echo,
+  abusive input handling, structured-output manipulation, and unsafe browser
+  Planning/ReAct inputs.
 
 | Evaluation area | Cases | Coverage |
 | --- | ---: | --- |
@@ -161,7 +167,7 @@ exploitable-vulnerability coverage or actual authorization enforcement. Role cla
 are report context only; no real user identity or permission checks are performed.
 
 Every functional case calls the configured live LLM through production prompts
-and guardrails. Set `HELPDESK_AGENT_EVAL_SUITE` to `testing` or `evaluation`;
+and guardrails. Set `HELPDESK_AGENT_EVAL_SUITE` to `testing`, `security`, or `evaluation`;
 unknown values fail collection. Provide `HELPDESK_AGENT_LLM_API_KEY`, plus the
 optional model/base URL settings, in the environment. DeepEval may also autoload
 local `.env` files; set `DEEPEVAL_DISABLE_DOTENV=1` to require explicit environment

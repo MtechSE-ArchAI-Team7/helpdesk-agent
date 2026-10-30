@@ -5,7 +5,10 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from helpdesk_agent.domain.models.browser import PlaywrightAssessment
+from helpdesk_agent.domain.models.browser import (
+    BrowserInspectionTool,
+    PlaywrightAssessment,
+)
 from helpdesk_agent.domain.policies.priority import Priority
 
 Service = Literal["jira", "slack", "email", "identity", "platform", "prometheus", "unknown"]
@@ -92,6 +95,21 @@ class EvidenceExpected(StrictModel):
     status: Literal["reproduced", "not_reproduced", "inconclusive"]
 
 
+class PlanningExpected(StrictModel):
+    allowed_tools: list[BrowserInspectionTool] = Field(min_length=1)
+
+
+class ReactExpected(StrictModel):
+    action: Literal["inspect", "finish"]
+    tool: BrowserInspectionTool | None = None
+
+    @model_validator(mode="after")
+    def match_action_to_tool(self) -> ReactExpected:
+        if (self.action == "inspect") != (self.tool is not None):
+            raise ValueError("Inspect expectations require a tool; finish expectations must omit it")
+        return self
+
+
 class CaseBase(StrictModel):
     id: str = Field(min_length=1)
     area: Area | None = None
@@ -128,7 +146,29 @@ class EvidenceCase(CaseBase):
     expected: EvidenceExpected
 
 
-EvaluationCase = Annotated[TriageCase | AssessmentCase | EvidenceCase, Field(discriminator="operation")]
+class PlanningCase(CaseBase):
+    operation: Literal["browser_planning"]
+    target_url: str = Field(min_length=1)
+    expected_error: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    expected: PlanningExpected
+
+
+class ReactCase(CaseBase):
+    operation: Literal["browser_react"]
+    target_url: str = Field(min_length=1)
+    expected_error: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    inspection_order: list[BrowserInspectionTool] = Field(min_length=1, max_length=3)
+    observations: list[dict[str, object]] = Field(min_length=1)
+    round_number: int = Field(ge=1, le=3)
+    expected: ReactExpected
+
+
+EvaluationCase = Annotated[
+    TriageCase | AssessmentCase | EvidenceCase | PlanningCase | ReactCase,
+    Field(discriminator="operation"),
+]
 
 
 class Dataset(StrictModel):
